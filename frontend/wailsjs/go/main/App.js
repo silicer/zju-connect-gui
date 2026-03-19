@@ -6,6 +6,10 @@ export function HideWindow() {
   return window['go']['main']['App']['HideWindow']();
 }
 
+export function GetSavedLaunchOptions() {
+  return window['go']['main']['App']['GetSavedLaunchOptions']();
+}
+
 export function IsRunning() {
   return window['go']['main']['App']['IsRunning']();
 }
@@ -14,8 +18,16 @@ export function Quit() {
   return window['go']['main']['App']['Quit']();
 }
 
+export function ResumePendingConnect() {
+  return window['go']['main']['App']['ResumePendingConnect']();
+}
+
 export function ShowWindow() {
   return window['go']['main']['App']['ShowWindow']();
+}
+
+export function SaveLaunchOptions(arg1) {
+  return window['go']['main']['App']['SaveLaunchOptions'](arg1);
 }
 
 export function Start(arg1) {

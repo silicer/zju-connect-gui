@@ -19,11 +19,17 @@ export type LaunchOptions = {
 
 export function HideWindow():Promise<void>;
 
+export function GetSavedLaunchOptions():Promise<LaunchOptions>;
+
 export function IsRunning():Promise<boolean>;
 
 export function Quit():Promise<void>;
 
+export function ResumePendingConnect():Promise<boolean>;
+
 export function ShowWindow():Promise<void>;
+
+export function SaveLaunchOptions(arg1:LaunchOptions):Promise<void>;
 
 export function Start(arg1:LaunchOptions):Promise<void>;
 
