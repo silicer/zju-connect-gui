@@ -8,6 +8,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
+const singleInstanceID = "ab3d7e1f-f25e-44ee-9c66-d3f71f33c4d3"
+
 //go:embed all:frontend/dist
 var assets embed.FS
 
@@ -22,6 +24,10 @@ func main() {
 		Width:             1024,
 		Height:            768,
 		HideWindowOnClose: true,
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId:               singleInstanceID,
+			OnSecondInstanceLaunch: app.onSecondInstanceLaunch,
+		},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

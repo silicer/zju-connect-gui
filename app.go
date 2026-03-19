@@ -5,11 +5,13 @@ import (
 	"errors"
 	"log"
 	stdRuntime "runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"zju-connect-gui/internal/backend"
 
+	"github.com/wailsapp/wails/v2/pkg/options"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -84,6 +86,17 @@ func (a *App) ShowWindow() {
 	wailsRuntime.WindowUnminimise(a.ctx)
 	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, true)
 	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, false)
+}
+
+func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
+	a.ShowWindow()
+	if a.ctx == nil {
+		return
+	}
+	if len(secondInstanceData.Args) == 0 {
+		return
+	}
+	go wailsRuntime.EventsEmit(a.ctx, "log", "Second instance launch intercepted with args: "+strings.Join(secondInstanceData.Args, " "))
 }
 
 func (a *App) HideWindow() {
