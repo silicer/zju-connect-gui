@@ -10,12 +10,12 @@ const logs = ref<string[]>([]);
 const logContainer = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 
-const port = ref(443);
+const fixedPort = 443;
 const username = ref('');
 const password = ref('');
 const socksBind = ref('127.0.0.1:1080');
 const httpBind = ref('127.0.0.1:8888');
-const tunMode = ref(false);
+const proxyOnlyMode = ref(false);
 const debugDump = ref(false);
 const activeTab = ref<'config' | 'logs'>('config');
 const fixedOptionsExpanded = ref(false);
@@ -73,6 +73,10 @@ const appendLog = (line: string) => {
         logContainer.value.scrollTop = logContainer.value.scrollHeight;
       }
     });
+  }
+
+  if (line.includes('VPN client started')) {
+    statusMessage.value = '已启动';
   }
 };
 
@@ -178,7 +182,7 @@ const markerStyle = (point: { x: number; y: number }) => {
 const currentLaunchOptions = (): LaunchOptions => ({
   protocol: 'atrust',
   server: 'sslvpn.scmcc.com.cn',
-  port: Number.isFinite(port.value) ? Math.trunc(port.value) : 0,
+  port: fixedPort,
   username: username.value.trim(),
   password: password.value,
   socksBind: socksBind.value.trim(),
@@ -187,27 +191,20 @@ const currentLaunchOptions = (): LaunchOptions => ({
   authType: 'auth/psw',
   loginDomain: 'AD',
   clientDataFile: 'client_data.json',
-  tunMode: tunMode.value,
+  tunMode: !proxyOnlyMode.value,
   debugDump: debugDump.value,
 });
 
 const applySavedLaunchOptions = (options: LaunchOptions) => {
-  if (typeof options.port === 'number' && Number.isFinite(options.port)) {
-    port.value = Math.trunc(options.port);
-  }
   username.value = options.username ?? '';
   password.value = options.password ?? '';
   socksBind.value = options.socksBind ?? '127.0.0.1:1080';
   httpBind.value = options.httpBind ?? '127.0.0.1:8888';
-  tunMode.value = Boolean(options.tunMode);
+  proxyOnlyMode.value = !Boolean(options.tunMode);
   debugDump.value = Boolean(options.debugDump);
 };
 
 const buildLaunchOptions = (): LaunchOptions | null => {
-  if (port.value < 1 || port.value > 65535) {
-    statusMessage.value = '端口范围必须是 1-65535';
-    return null;
-  }
   if (!username.value.trim()) {
     statusMessage.value = '用户名不能为空';
     return null;
@@ -360,7 +357,7 @@ onMounted(() => {
   void ResumePendingConnect()
     .then((resumed) => {
       if (resumed) {
-        statusMessage.value = '已切换到管理员模式，正在恢复 TUN 连接...';
+        statusMessage.value = '已切换到管理员模式，正在恢复连接...';
       }
     })
     .catch((error) => {
@@ -368,7 +365,7 @@ onMounted(() => {
     });
 });
 
-watch([port, username, password, socksBind, httpBind, tunMode, debugDump], () => {
+watch([username, password, socksBind, httpBind, proxyOnlyMode, debugDump], () => {
   schedulePersist();
 });
 
@@ -437,17 +434,6 @@ onUnmounted(() => {
 
         <div class="space-y-4 rounded-xl border border-slate-300 bg-white p-4">
           <label class="block text-sm">
-            <span class="mb-1 block text-slate-600">端口</span>
-            <input
-              v-model.number="port"
-              type="number"
-              min="1"
-              max="65535"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
-            />
-          </label>
-
-          <label class="block text-sm">
             <span class="mb-1 block text-slate-600">用户名</span>
             <input
               v-model="username"
@@ -484,9 +470,12 @@ onUnmounted(() => {
           </label>
 
           <div class="grid gap-3 sm:grid-cols-2">
-            <label class="flex items-center justify-between rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700">
-              <span>TUN 模式</span>
-              <input v-model="tunMode" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
+            <label class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700">
+              <div class="flex items-center justify-between gap-3">
+                <span>仅代理模式</span>
+                <input v-model="proxyOnlyMode" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
+              </div>
+              <p class="mt-1 text-xs text-slate-500">如果不知道是什么，请不要打开。</p>
             </label>
 
             <label class="flex items-center justify-between rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700">
@@ -505,12 +494,13 @@ onUnmounted(() => {
             <ul v-if="fixedOptionsExpanded" class="mt-2 list-inside list-disc space-y-1">
               <li>-protocol atrust</li>
               <li>-server sslvpn.scmcc.com.cn</li>
+              <li>-port 443</li>
               <li>-disable-zju-config</li>
               <li>-secondary-dns-server 223.5.5.5</li>
               <li>-auth-type auth/psw</li>
               <li>-login-domain AD</li>
               <li>-client-data-file client_data.json</li>
-              <li>TUN 开启时附加：-tun-mode -add-route -dns-hijack -fake-ip</li>
+              <li>仅代理模式关闭时附加：-tun-mode -add-route -dns-hijack -fake-ip</li>
               <li>调试开关开启时附加：-debug-dump</li>
             </ul>
           </details>

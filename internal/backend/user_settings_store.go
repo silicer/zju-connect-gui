@@ -26,10 +26,12 @@ func DefaultLaunchOptions() LaunchOptions {
 	defaults := normalizeLaunchOptions(LaunchOptions{})
 	defaults.Protocol = defaultProtocol
 	defaults.Server = defaultServer
+	defaults.Port = defaultPort
 	defaults.SecondaryDNSServer = defaultSecondaryDNSServer
 	defaults.AuthType = defaultAuthType
 	defaults.LoginDomain = defaultLoginDomain
 	defaults.ClientDataFile = defaultClientDataFile
+	defaults.TunMode = true
 	return defaults
 }
 
@@ -54,6 +56,7 @@ func (s *UserSettingsStore) Load() (LaunchOptions, error) {
 	options = normalizeLaunchOptions(options)
 	options.Protocol = defaultProtocol
 	options.Server = defaultServer
+	options.Port = defaultPort
 	options.SecondaryDNSServer = defaultSecondaryDNSServer
 	options.AuthType = defaultAuthType
 	options.LoginDomain = defaultLoginDomain
@@ -69,6 +72,7 @@ func (s *UserSettingsStore) Save(options LaunchOptions) error {
 	options = normalizeLaunchOptions(options)
 	options.Protocol = defaultProtocol
 	options.Server = defaultServer
+	options.Port = defaultPort
 	options.SecondaryDNSServer = defaultSecondaryDNSServer
 	options.AuthType = defaultAuthType
 	options.LoginDomain = defaultLoginDomain
