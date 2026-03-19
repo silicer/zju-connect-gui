@@ -1,7 +1,7 @@
 <script lang="ts" setup>
-import {computed, nextTick, onMounted, onUnmounted, ref} from 'vue';
+import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
 import {EventsOn} from '../wailsjs/runtime/runtime';
-import {IsRunning, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
+import {GetSavedLaunchOptions, IsRunning, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
 import type {LaunchOptions} from '../wailsjs/go/main/App';
 
 const running = ref(false);
@@ -17,12 +17,17 @@ const socksBind = ref('127.0.0.1:1080');
 const httpBind = ref('127.0.0.1:8888');
 const tunMode = ref(false);
 const debugDump = ref(false);
+const activeTab = ref<'config' | 'logs'>('config');
+const fixedOptionsExpanded = ref(false);
 
 const modalOpen = ref(false);
 const modalTitle = ref('');
 const modalPrompt = ref('');
 const modalInput = ref('');
 const captchaBase64 = ref<string | null>(null);
+const modalType = ref<'captcha' | 'input'>('input');
+const captchaPoints = ref<Array<{ x: number; y: number }>>([]);
+const captchaNaturalSize = ref<{ width: number; height: number } | null>(null);
 
 const captchaSrc = computed(() => {
   if (!captchaBase64.value) {
@@ -30,6 +35,32 @@ const captchaSrc = computed(() => {
   }
   return `data:image/png;base64,${captchaBase64.value}`;
 });
+
+const extractCaptchaBase64 = (payload: unknown): string | null => {
+  if (typeof payload === 'string') {
+    const value = payload.trim();
+    return value ? value : null;
+  }
+
+  if (Array.isArray(payload) && payload.length > 0) {
+    return extractCaptchaBase64(payload[0]);
+  }
+
+  if (payload && typeof payload === 'object') {
+    const data = payload as Record<string, unknown>;
+    if (typeof data.base64 === 'string' && data.base64.trim()) {
+      return data.base64;
+    }
+    if ('payload' in data) {
+      return extractCaptchaBase64(data.payload);
+    }
+    if ('data' in data) {
+      return extractCaptchaBase64(data.data);
+    }
+  }
+
+  return null;
+};
 
 const appendLog = (line: string) => {
   logs.value.push(line);
@@ -45,21 +76,131 @@ const appendLog = (line: string) => {
   }
 };
 
-const openModal = (title: string, prompt: string) => {
+const closeModal = () => {
+  modalOpen.value = false;
+  modalInput.value = '';
+  captchaBase64.value = null;
+  captchaNaturalSize.value = null;
+  clearCaptchaSelection();
+};
+
+const clearLogs = () => {
+  logs.value = [];
+};
+
+const clearCaptchaSelection = () => {
+  captchaPoints.value = [];
+};
+
+const removeLastCaptchaPoint = () => {
+  captchaPoints.value = captchaPoints.value.slice(0, -1);
+};
+
+const openCaptchaModal = () => {
+  modalType.value = 'captcha';
+  modalTitle.value = '图形验证码';
+  modalPrompt.value = '请在图片上按顺序点击对应位置，然后提交';
+  modalInput.value = '';
+  clearCaptchaSelection();
+  modalOpen.value = true;
+};
+
+const openInputModal = (title: string, prompt: string) => {
+  modalType.value = 'input';
   modalTitle.value = title;
   modalPrompt.value = prompt;
   modalInput.value = '';
   modalOpen.value = true;
 };
 
-const closeModal = () => {
-  modalOpen.value = false;
-  modalInput.value = '';
-  captchaBase64.value = null;
+const clamp = (value: number, min: number, max: number) => {
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
 };
 
-const clearLogs = () => {
-  logs.value = [];
+const onCaptchaImageLoad = (event: Event) => {
+  const img = event.target as HTMLImageElement;
+  if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+    captchaNaturalSize.value = {
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+    };
+  }
+};
+
+const onCaptchaImageClick = (event: MouseEvent) => {
+  if (modalType.value !== 'captcha') {
+    return;
+  }
+
+  const img = event.currentTarget as HTMLImageElement;
+  const rect = img.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+
+  const naturalWidth = img.naturalWidth;
+  const naturalHeight = img.naturalHeight;
+  if (naturalWidth <= 0 || naturalHeight <= 0) {
+    return;
+  }
+
+  const x = clamp(Math.round(((event.clientX - rect.left) * naturalWidth) / rect.width), 0, naturalWidth - 1);
+  const y = clamp(Math.round(((event.clientY - rect.top) * naturalHeight) / rect.height), 0, naturalHeight - 1);
+
+  captchaNaturalSize.value = {
+    width: naturalWidth,
+    height: naturalHeight,
+  };
+  captchaPoints.value = [...captchaPoints.value, {x, y}];
+};
+
+const markerStyle = (point: { x: number; y: number }) => {
+  const size = captchaNaturalSize.value;
+  if (!size || size.width <= 1 || size.height <= 1) {
+    return {
+      left: '0%',
+      top: '0%',
+    };
+  }
+
+  return {
+    left: `${(point.x / (size.width - 1)) * 100}%`,
+    top: `${(point.y / (size.height - 1)) * 100}%`,
+  };
+};
+
+const currentLaunchOptions = (): LaunchOptions => ({
+  protocol: 'atrust',
+  server: 'sslvpn.scmcc.com.cn',
+  port: Number.isFinite(port.value) ? Math.trunc(port.value) : 0,
+  username: username.value.trim(),
+  password: password.value,
+  socksBind: socksBind.value.trim(),
+  httpBind: httpBind.value.trim(),
+  secondaryDnsServer: '223.5.5.5',
+  authType: 'auth/psw',
+  loginDomain: 'AD',
+  clientDataFile: 'client_data.json',
+  tunMode: tunMode.value,
+  debugDump: debugDump.value,
+});
+
+const applySavedLaunchOptions = (options: LaunchOptions) => {
+  if (typeof options.port === 'number' && Number.isFinite(options.port)) {
+    port.value = Math.trunc(options.port);
+  }
+  username.value = options.username ?? '';
+  password.value = options.password ?? '';
+  socksBind.value = options.socksBind ?? '127.0.0.1:1080';
+  httpBind.value = options.httpBind ?? '127.0.0.1:8888';
+  tunMode.value = Boolean(options.tunMode);
+  debugDump.value = Boolean(options.debugDump);
 };
 
 const buildLaunchOptions = (): LaunchOptions | null => {
@@ -84,30 +225,37 @@ const buildLaunchOptions = (): LaunchOptions | null => {
     return null;
   }
 
-  return {
-    protocol: 'atrust',
-    server: 'sslvpn.scmcc.com.cn',
-    port: port.value,
-    username: username.value.trim(),
-    password: password.value,
-    socksBind: socksBind.value.trim(),
-    httpBind: httpBind.value.trim(),
-    secondaryDnsServer: '223.5.5.5',
-    authType: 'auth/psw',
-    loginDomain: 'AD',
-    clientDataFile: 'client_data.json',
-    tunMode: tunMode.value,
-    debugDump: debugDump.value,
-  };
+  return currentLaunchOptions();
 };
 
 const handleSubmit = async () => {
-  if (!modalInput.value.trim()) {
-    statusMessage.value = '请输入内容后再提交';
-    return;
+  let payload = '';
+  if (modalType.value === 'captcha') {
+    if (captchaPoints.value.length === 0) {
+      statusMessage.value = '请先点击验证码图片';
+      return;
+    }
+    const size = captchaNaturalSize.value;
+    if (!size || size.width <= 0 || size.height <= 0) {
+      statusMessage.value = '验证码尺寸未就绪，请重新点击验证码';
+      return;
+    }
+
+    payload = JSON.stringify({
+      coordinates: captchaPoints.value.map((point) => [point.x, point.y]),
+      width: size.width,
+      height: size.height,
+    });
+  } else {
+    if (!modalInput.value.trim()) {
+      statusMessage.value = '请输入内容后再提交';
+      return;
+    }
+    payload = modalInput.value.trim();
   }
+
   try {
-    await SubmitInput(modalInput.value.trim());
+    await SubmitInput(payload);
     statusMessage.value = '输入已提交';
     closeModal();
   } catch (error) {
@@ -123,6 +271,7 @@ const handleStart = async () => {
   }
 
   try {
+    await SaveLaunchOptions(options);
     await Start(options);
     statusMessage.value = '正在启动...';
   } catch (error) {
@@ -145,10 +294,21 @@ let cleanupState = () => {};
 let cleanupCaptcha = () => {};
 let cleanupInput = () => {};
 let cleanupError = () => {};
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-onMounted(async () => {
-  running.value = await IsRunning();
+const schedulePersist = () => {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+  }
+  persistTimer = setTimeout(() => {
+    const options = currentLaunchOptions();
+    void SaveLaunchOptions(options).catch(() => {
+      // ignore autosave errors, startup path will surface persistent errors
+    });
+  }, 250);
+};
 
+onMounted(() => {
   cleanupLog = EventsOn('log', (line: string) => {
     appendLog(line);
   });
@@ -162,24 +322,54 @@ onMounted(async () => {
     }
   });
 
-  cleanupCaptcha = EventsOn('need-captcha', (payload: { base64?: string } | string | undefined) => {
-    const base64 = typeof payload === 'string' ? payload : payload?.base64;
-    if (!base64) {
-      return;
+  cleanupCaptcha = EventsOn('need-captcha', (...args: unknown[]) => {
+    const base64 = extractCaptchaBase64(args[0]);
+    if (base64) {
+      captchaBase64.value = base64;
+      captchaNaturalSize.value = null;
+      openCaptchaModal();
     }
-    captchaBase64.value = base64;
-    openModal('验证码输入', '请输入验证码 JSON');
   });
 
   cleanupInput = EventsOn('need-input', (payload: { type?: string; prompt?: string }) => {
     const prompt = payload?.prompt ?? '请输入内容';
     const title = payload?.type === 'sms' ? '短信验证码' : '输入需求';
-    openModal(title, prompt);
+    openInputModal(title, prompt);
   });
 
   cleanupError = EventsOn('error', (message: string) => {
     statusMessage.value = message;
   });
+
+  void IsRunning()
+    .then((value) => {
+      running.value = value;
+    })
+    .catch(() => {
+      running.value = false;
+    });
+
+  void GetSavedLaunchOptions()
+    .then((options) => {
+      applySavedLaunchOptions(options);
+    })
+    .catch(() => {
+      // keep defaults when no persisted settings are available
+    });
+
+  void ResumePendingConnect()
+    .then((resumed) => {
+      if (resumed) {
+        statusMessage.value = '已切换到管理员模式，正在恢复 TUN 连接...';
+      }
+    })
+    .catch((error) => {
+      statusMessage.value = (error as Error).message;
+    });
+});
+
+watch([port, username, password, socksBind, httpBind, tunMode, debugDump], () => {
+  schedulePersist();
 });
 
 onUnmounted(() => {
@@ -188,6 +378,10 @@ onUnmounted(() => {
   cleanupCaptcha();
   cleanupInput();
   cleanupError();
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
 });
 </script>
 
@@ -217,32 +411,25 @@ onUnmounted(() => {
       <p v-if="statusMessage" class="mt-2 text-sm text-amber-700">{{ statusMessage }}</p>
     </header>
 
-    <main class="grid gap-6 px-6 py-6 lg:grid-cols-[1.2fr_1fr]">
-      <section class="space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold">运行日志</h2>
-          <div class="flex items-center gap-3 text-sm text-slate-600">
-            <label class="flex items-center gap-2">
-              <input v-model="autoScroll" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
-              自动滚动
-            </label>
-            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="clearLogs">
-              清空
-            </button>
-          </div>
-        </div>
-        <div
-          ref="logContainer"
-          class="h-[420px] overflow-auto rounded-xl border border-slate-300 bg-white p-4 font-mono text-xs leading-relaxed text-slate-700"
+    <main class="px-6 py-6">
+      <div class="mb-4 inline-flex rounded-xl border border-slate-300 bg-white p-1 shadow-sm">
+        <button
+          class="rounded-lg px-4 py-2 text-sm font-semibold"
+          :class="activeTab === 'config' ? 'bg-emerald-500 text-white' : 'text-slate-600 hover:bg-slate-100'"
+          @click="activeTab = 'config'"
         >
-          <div v-if="logs.length === 0" class="text-slate-400">暂无日志输出</div>
-          <div v-for="(line, index) in logs" :key="index" class="whitespace-pre-wrap">
-            {{ line }}
-          </div>
-        </div>
-      </section>
+          配置
+        </button>
+        <button
+          class="rounded-lg px-4 py-2 text-sm font-semibold"
+          :class="activeTab === 'logs' ? 'bg-emerald-500 text-white' : 'text-slate-600 hover:bg-slate-100'"
+          @click="activeTab = 'logs'"
+        >
+          日志
+        </button>
+      </div>
 
-      <section class="space-y-4">
+      <section v-if="activeTab === 'config'" class="space-y-4">
         <div>
           <h2 class="text-lg font-semibold">启动参数</h2>
           <p class="text-xs text-slate-500">仅保留界面可配置项，其余参数按预设值自动携带</p>
@@ -308,9 +495,14 @@ onUnmounted(() => {
             </label>
           </div>
 
-          <div class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600">
-            <p class="font-semibold text-slate-700">界面隐藏固定参数</p>
-            <ul class="mt-2 list-inside list-disc space-y-1">
+          <details class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600" :open="fixedOptionsExpanded">
+            <summary
+              class="cursor-pointer select-none font-semibold text-slate-700"
+              @click.prevent="fixedOptionsExpanded = !fixedOptionsExpanded"
+            >
+              固定参数（默认折叠）
+            </summary>
+            <ul v-if="fixedOptionsExpanded" class="mt-2 list-inside list-disc space-y-1">
               <li>-protocol atrust</li>
               <li>-server sslvpn.scmcc.com.cn</li>
               <li>-disable-zju-config</li>
@@ -321,7 +513,32 @@ onUnmounted(() => {
               <li>TUN 开启时附加：-tun-mode -add-route -dns-hijack -fake-ip</li>
               <li>调试开关开启时附加：-debug-dump</li>
             </ul>
+          </details>
+        </div>
+      </section>
+
+      <section v-else class="space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold">运行日志</h2>
+          <div class="flex items-center gap-3 text-sm text-slate-600">
+            <label class="flex items-center gap-2">
+              <input v-model="autoScroll" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
+              自动滚动
+            </label>
+            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="clearLogs">
+              清空
+            </button>
           </div>
+        </div>
+
+        <div ref="logContainer" class="h-[520px] overflow-auto rounded-xl border border-slate-300 bg-white">
+          <div v-if="logs.length === 0" class="p-4 text-sm text-slate-400">暂无日志输出</div>
+          <ol v-else class="divide-y divide-slate-200 font-mono text-xs text-slate-700">
+            <li v-for="(line, index) in logs" :key="index" class="flex gap-3 px-4 py-2 leading-relaxed">
+              <span class="w-10 shrink-0 text-slate-400">{{ index + 1 }}</span>
+              <span class="whitespace-pre-wrap break-all">{{ line }}</span>
+            </li>
+          </ol>
         </div>
       </section>
     </main>
@@ -333,13 +550,42 @@ onUnmounted(() => {
       <div class="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
         <h3 class="text-lg font-semibold">{{ modalTitle }}</h3>
         <p class="mt-2 text-sm text-slate-600">{{ modalPrompt }}</p>
-        <img
-          v-if="captchaBase64"
-          :src="captchaSrc"
-          alt="captcha"
-          class="mt-4 w-full rounded-lg border border-slate-300"
-        />
+        <div v-if="modalType === 'captcha'" class="mt-4 space-y-3">
+          <div class="relative overflow-hidden rounded-lg border border-slate-300 bg-slate-100">
+            <img
+              v-if="captchaBase64"
+              :src="captchaSrc"
+              alt="captcha"
+              class="block w-full cursor-crosshair"
+              @load="onCaptchaImageLoad"
+              @click="onCaptchaImageClick"
+            />
+            <div
+              v-for="(point, index) in captchaPoints"
+              :key="`${point.x}-${point.y}-${index}`"
+              class="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+              :style="markerStyle(point)"
+            >
+              <div class="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white shadow">
+                {{ index + 1 }}
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 text-sm">
+            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="removeLastCaptchaPoint">撤销上一步</button>
+            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="clearCaptchaSelection">清空坐标</button>
+            <span class="text-slate-500">已选择 {{ captchaPoints.length }} 个点</span>
+          </div>
+
+          <div class="max-h-24 overflow-auto rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">
+            <span v-if="captchaPoints.length === 0">尚未选择坐标</span>
+            <span v-else>{{ JSON.stringify(captchaPoints.map((point) => [point.x, point.y])) }}</span>
+          </div>
+        </div>
+
         <textarea
+          v-else
           v-model="modalInput"
           class="mt-4 h-28 w-full rounded-lg border border-slate-300 bg-white p-3 text-sm text-slate-700"
           placeholder="请输入响应内容"
