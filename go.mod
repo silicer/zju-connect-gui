@@ -3,6 +3,7 @@ module zju-connect-gui
 go 1.23
 
 require (
+	github.com/containers/winquit v1.1.0
 	github.com/getlantern/systray v1.2.2
 	github.com/wailsapp/wails/v2 v2.11.0
 	golang.org/x/sys v0.30.0
@@ -35,6 +36,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/samber/lo v1.49.1 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
