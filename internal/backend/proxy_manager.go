@@ -31,6 +31,7 @@ type ProxyManager struct {
 	awaiting    string
 	captchaPoll bool
 	captchaPath string
+	eipOpened   bool
 	elevated    bool
 	elevatedPID int
 }
@@ -71,6 +72,7 @@ func (p *ProxyManager) Start(options LaunchOptions) error {
 
 	p.mu.Lock()
 	p.captchaPath = captchaPath
+	p.eipOpened = false
 	p.mu.Unlock()
 
 	_ = os.Remove(captchaPath)
@@ -200,6 +202,7 @@ func (p *ProxyManager) startNormal(captchaPath string, options LaunchOptions) er
 	p.logCancel = logCancel
 	p.awaiting = ""
 	p.captchaPoll = false
+	p.eipOpened = false
 	p.mu.Unlock()
 
 	p.emitState("running")
@@ -215,6 +218,7 @@ func (p *ProxyManager) startNormal(captchaPath string, options LaunchOptions) er
 		p.stdin = nil
 		p.awaiting = ""
 		p.captchaPoll = false
+		p.eipOpened = false
 		p.mu.Unlock()
 		p.emitState("stopped")
 		close(waitDone)
@@ -270,6 +274,7 @@ func (p *ProxyManager) startElevated(captchaPath string, options LaunchOptions) 
 	p.logCancel = logCancel
 	p.awaiting = ""
 	p.captchaPoll = false
+	p.eipOpened = false
 	p.mu.Unlock()
 
 	p.emitState("running")
@@ -335,6 +340,7 @@ func (p *ProxyManager) stopElevated(pid int) error {
 		p.elevated = false
 		logCancel := p.logCancel
 		p.logCancel = nil
+		p.eipOpened = false
 		p.mu.Unlock()
 		if logCancel != nil {
 			logCancel()
@@ -364,6 +370,7 @@ func (p *ProxyManager) stopElevated(pid int) error {
 	p.elevatedPID = 0
 	p.awaiting = ""
 	p.captchaPoll = false
+	p.eipOpened = false
 	p.mu.Unlock()
 	if logCancel != nil {
 		logCancel()
@@ -544,6 +551,34 @@ func (p *ProxyManager) handleLogLine(line string) {
 	}
 	p.emit("log", trimmed)
 	p.detectPrompt(trimmed)
+	if isVPNClientStartedLine(trimmed) {
+		p.openEIPURLOnce()
+	}
+}
+
+func isVPNClientStartedLine(line string) bool {
+	return strings.Contains(strings.TrimSpace(line), "VPN client started")
+}
+
+func (p *ProxyManager) openEIPURLOnce() {
+	p.mu.Lock()
+	if p.eipOpened {
+		p.mu.Unlock()
+		return
+	}
+	ctx := p.ctx
+	p.eipOpened = true
+	p.mu.Unlock()
+
+	if ctx == nil {
+		p.mu.Lock()
+		p.eipOpened = false
+		p.mu.Unlock()
+		p.emit("log", "[eip] failed to open EIP URL: runtime context is not initialized")
+		return
+	}
+
+	go wailsRuntime.BrowserOpenURL(ctx, EIPURL)
 }
 
 func (p *ProxyManager) detectPrompt(line string) {
