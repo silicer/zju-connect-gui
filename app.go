@@ -88,6 +88,14 @@ func (a *App) ShowWindow() {
 	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, false)
 }
 
+func (a *App) OpenEIP() {
+	if a.ctx == nil {
+		log.Printf("failed to open EIP URL: app context is not initialized")
+		return
+	}
+	wailsRuntime.BrowserOpenURL(a.ctx, backend.EIPURL)
+}
+
 func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
 	a.ShowWindow()
 	if a.ctx == nil {

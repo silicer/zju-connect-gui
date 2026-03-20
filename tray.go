@@ -25,18 +25,19 @@ func (a *App) startTray() {
 			}
 			systray.SetTooltip("zju-connect GUI")
 
+			openEIPItem := systray.AddMenuItem("打开 eip", "用默认浏览器打开 http://eip.scmcc.com.cn/")
+			systray.AddSeparator()
 			restoreItem := systray.AddMenuItem("恢复窗口", "显示主窗口")
-			hideItem := systray.AddMenuItem("隐藏到托盘", "隐藏主窗口")
 			systray.AddSeparator()
 			quitItem := systray.AddMenuItem("退出程序", "停止连接并退出程序")
 
 			go func() {
 				for {
 					select {
+					case <-openEIPItem.ClickedCh:
+						a.OpenEIP()
 					case <-restoreItem.ClickedCh:
 						a.ShowWindow()
-					case <-hideItem.ClickedCh:
-						a.HideWindow()
 					case <-quitItem.ClickedCh:
 						a.Quit()
 						return
