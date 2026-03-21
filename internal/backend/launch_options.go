@@ -25,19 +25,21 @@ var supportedProtocols = map[string]struct{}{
 }
 
 type LaunchOptions struct {
-	Protocol           string `json:"protocol"`
-	Server             string `json:"server"`
-	Port               int    `json:"port"`
-	Username           string `json:"username"`
-	Password           string `json:"password"`
-	SocksBind          string `json:"socksBind"`
-	HTTPBind           string `json:"httpBind"`
-	SecondaryDNSServer string `json:"secondaryDnsServer"`
-	AuthType           string `json:"authType"`
-	LoginDomain        string `json:"loginDomain"`
-	ClientDataFile     string `json:"clientDataFile"`
-	TunMode            bool   `json:"tunMode"`
-	DebugDump          bool   `json:"debugDump"`
+	Protocol           string   `json:"protocol"`
+	Server             string   `json:"server"`
+	Port               int      `json:"port"`
+	Username           string   `json:"username"`
+	Password           string   `json:"password"`
+	SocksBind          string   `json:"socksBind"`
+	HTTPBind           string   `json:"httpBind"`
+	SecondaryDNSServer string   `json:"secondaryDnsServer"`
+	AuthType           string   `json:"authType"`
+	LoginDomain        string   `json:"loginDomain"`
+	ClientDataFile     string   `json:"clientDataFile"`
+	EIPBrowserProgram  string   `json:"eipBrowserProgram"`
+	EIPBrowserArgs     []string `json:"eipBrowserArgs"`
+	TunMode            bool     `json:"tunMode"`
+	DebugDump          bool     `json:"debugDump"`
 }
 
 func normalizeLaunchOptions(options LaunchOptions) LaunchOptions {
@@ -50,6 +52,8 @@ func normalizeLaunchOptions(options LaunchOptions) LaunchOptions {
 	options.AuthType = strings.TrimSpace(options.AuthType)
 	options.LoginDomain = strings.TrimSpace(options.LoginDomain)
 	options.ClientDataFile = strings.TrimSpace(options.ClientDataFile)
+	options.EIPBrowserProgram = strings.TrimSpace(options.EIPBrowserProgram)
+	options.EIPBrowserArgs = normalizeStringList(options.EIPBrowserArgs)
 
 	if options.Protocol == "" {
 		options.Protocol = defaultProtocol
@@ -80,6 +84,27 @@ func normalizeLaunchOptions(options LaunchOptions) LaunchOptions {
 	}
 
 	return options
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	return normalized
 }
 
 func (o LaunchOptions) Validate() error {
