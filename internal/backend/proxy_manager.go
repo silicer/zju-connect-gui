@@ -32,6 +32,7 @@ type ProxyManager struct {
 	captchaPoll bool
 	captchaPath string
 	eipOpened   bool
+	eipOptions  LaunchOptions
 	elevated    bool
 	elevatedPID int
 }
@@ -73,6 +74,7 @@ func (p *ProxyManager) Start(options LaunchOptions) error {
 	p.mu.Lock()
 	p.captchaPath = captchaPath
 	p.eipOpened = false
+	p.eipOptions = options
 	p.mu.Unlock()
 
 	_ = os.Remove(captchaPath)
@@ -567,18 +569,18 @@ func (p *ProxyManager) openEIPURLOnce() {
 		return
 	}
 	ctx := p.ctx
+	options := p.eipOptions
 	p.eipOpened = true
 	p.mu.Unlock()
 
-	if ctx == nil {
-		p.mu.Lock()
-		p.eipOpened = false
-		p.mu.Unlock()
-		p.emit("log", "[eip] failed to open EIP URL: runtime context is not initialized")
-		return
-	}
-
-	go wailsRuntime.BrowserOpenURL(ctx, EIPURL)
+	go func() {
+		if err := OpenEIP(ctx, options); err != nil {
+			p.mu.Lock()
+			p.eipOpened = false
+			p.mu.Unlock()
+			p.emit("log", fmt.Sprintf("[eip] failed to open EIP URL: %v", err))
+		}
+	}()
 }
 
 func (p *ProxyManager) detectPrompt(line string) {

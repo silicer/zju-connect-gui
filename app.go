@@ -89,11 +89,19 @@ func (a *App) ShowWindow() {
 }
 
 func (a *App) OpenEIP() {
-	if a.ctx == nil {
-		log.Printf("failed to open EIP URL: app context is not initialized")
-		return
+	options := backend.DefaultLaunchOptions()
+	if a.store != nil {
+		saved, err := a.store.Load()
+		if err != nil {
+			log.Printf("failed to load saved launch options for EIP: %v", err)
+		} else {
+			options = saved
+		}
 	}
-	wailsRuntime.BrowserOpenURL(a.ctx, backend.EIPURL)
+
+	if err := backend.OpenEIP(a.ctx, options); err != nil {
+		log.Printf("failed to open EIP URL: %v", err)
+	}
 }
 
 func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {

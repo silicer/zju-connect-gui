@@ -25,7 +25,7 @@ func (a *App) startTray() {
 			}
 			systray.SetTooltip("zju-connect GUI")
 
-			openEIPItem := systray.AddMenuItem("打开 eip", "用默认浏览器打开 http://eip.scmcc.com.cn/")
+			openEIPItem := systray.AddMenuItem("打开 eip", "打开 EIP 主页")
 			systray.AddSeparator()
 			restoreItem := systray.AddMenuItem("恢复窗口", "显示主窗口")
 			systray.AddSeparator()
