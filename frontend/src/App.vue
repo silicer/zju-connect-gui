@@ -4,6 +4,11 @@ import {EventsOn} from '../wailsjs/runtime/runtime';
 import {GetSavedLaunchOptions, IsRunning, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
 import type {LaunchOptions} from '../wailsjs/go/main/App';
 
+type GUIEIPLaunchOptions = LaunchOptions & {
+  eipBrowserProgram?: string;
+  eipBrowserArgs?: string[];
+};
+
 const running = ref(false);
 const statusMessage = ref('');
 const logs = ref<string[]>([]);
@@ -19,6 +24,9 @@ const proxyOnlyMode = ref(false);
 const debugDump = ref(false);
 const activeTab = ref<'config' | 'logs'>('config');
 const fixedOptionsExpanded = ref(false);
+const eipOptionsExpanded = ref(false);
+const eipBrowserProgram = ref('');
+const eipBrowserArgs = ref('');
 
 const modalOpen = ref(false);
 const modalTitle = ref('');
@@ -179,7 +187,12 @@ const markerStyle = (point: { x: number; y: number }) => {
   };
 };
 
-const currentLaunchOptions = (): LaunchOptions => ({
+const parseEIPBrowserArgs = (value: string): string[] => value
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter((line) => line.length > 0);
+
+const currentLaunchOptions = (): GUIEIPLaunchOptions => ({
   protocol: 'atrust',
   server: 'sslvpn.scmcc.com.cn',
   port: fixedPort,
@@ -191,15 +204,19 @@ const currentLaunchOptions = (): LaunchOptions => ({
   authType: 'auth/psw',
   loginDomain: 'AD',
   clientDataFile: 'client_data.json',
+  eipBrowserProgram: eipBrowserProgram.value.trim(),
+  eipBrowserArgs: parseEIPBrowserArgs(eipBrowserArgs.value),
   tunMode: !proxyOnlyMode.value,
   debugDump: debugDump.value,
 });
 
-const applySavedLaunchOptions = (options: LaunchOptions) => {
+const applySavedLaunchOptions = (options: GUIEIPLaunchOptions) => {
   username.value = options.username ?? '';
   password.value = options.password ?? '';
   socksBind.value = options.socksBind ?? '127.0.0.1:1080';
   httpBind.value = options.httpBind ?? '127.0.0.1:8888';
+  eipBrowserProgram.value = options.eipBrowserProgram ?? '';
+  eipBrowserArgs.value = (options.eipBrowserArgs ?? []).join('\n');
   proxyOnlyMode.value = !Boolean(options.tunMode);
   debugDump.value = Boolean(options.debugDump);
 };
@@ -365,7 +382,7 @@ onMounted(() => {
     });
 });
 
-watch([username, password, socksBind, httpBind, proxyOnlyMode, debugDump], () => {
+watch([username, password, socksBind, httpBind, eipBrowserProgram, eipBrowserArgs, proxyOnlyMode, debugDump], () => {
   schedulePersist();
 });
 
@@ -483,6 +500,35 @@ onUnmounted(() => {
               <input v-model="debugDump" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
             </label>
           </div>
+
+          <details class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600" :open="eipOptionsExpanded">
+            <summary
+              class="cursor-pointer select-none font-semibold text-slate-700"
+              @click.prevent="eipOptionsExpanded = !eipOptionsExpanded"
+            >
+              EIP 打开设置（默认折叠）
+            </summary>
+            <div v-if="eipOptionsExpanded" class="mt-3 space-y-3">
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-600">浏览器程序路径</span>
+                <input
+                  v-model="eipBrowserProgram"
+                  type="text"
+                  class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
+                  placeholder="留空则使用系统默认浏览器"
+                />
+              </label>
+
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-600">浏览器参数（每行一个）</span>
+                <textarea
+                  v-model="eipBrowserArgs"
+                  class="h-28 w-full rounded-lg border border-slate-300 bg-white p-3 text-slate-800 outline-none focus:border-emerald-500"
+                  placeholder="每行一个参数，启动时会自动在最后追加 URL"
+                ></textarea>
+              </label>
+            </div>
+          </details>
 
           <details class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600" :open="fixedOptionsExpanded">
             <summary
