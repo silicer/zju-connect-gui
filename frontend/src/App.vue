@@ -1,13 +1,10 @@
 <script lang="ts" setup>
 import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
 import {EventsOn} from '../wailsjs/runtime/runtime';
+import type {main} from '../wailsjs/go/models';
 import {GetSavedLaunchOptions, IsRunning, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
-import type {LaunchOptions} from '../wailsjs/go/main/App';
 
-type GUIEIPLaunchOptions = LaunchOptions & {
-  eipBrowserProgram?: string;
-  eipBrowserArgs?: string[];
-};
+type LaunchOptions = main.LaunchOptions;
 
 const running = ref(false);
 const statusMessage = ref('');
@@ -192,7 +189,7 @@ const parseEIPBrowserArgs = (value: string): string[] => value
   .map((line) => line.trim())
   .filter((line) => line.length > 0);
 
-const currentLaunchOptions = (): GUIEIPLaunchOptions => ({
+const currentLaunchOptions = (): LaunchOptions => ({
   protocol: 'atrust',
   server: 'sslvpn.scmcc.com.cn',
   port: fixedPort,
@@ -210,7 +207,7 @@ const currentLaunchOptions = (): GUIEIPLaunchOptions => ({
   debugDump: debugDump.value,
 });
 
-const applySavedLaunchOptions = (options: GUIEIPLaunchOptions) => {
+const applySavedLaunchOptions = (options: LaunchOptions) => {
   username.value = options.username ?? '';
   password.value = options.password ?? '';
   socksBind.value = options.socksBind ?? '127.0.0.1:1080';

@@ -27,8 +27,6 @@ type App struct {
 	allowClose bool
 }
 
-type LaunchOptions = backend.LaunchOptions
-
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{}
@@ -140,13 +138,14 @@ func (a *App) Start(options LaunchOptions) error {
 	if a.proxy == nil {
 		return errors.New("proxy manager not initialized")
 	}
+	backendOptions := options.toBackend()
 	if a.store != nil {
-		if err := a.store.Save(options); err != nil {
+		if err := a.store.Save(backendOptions); err != nil {
 			return err
 		}
 	}
 
-	if stdRuntime.GOOS == "windows" && options.TunMode {
+	if stdRuntime.GOOS == "windows" && backendOptions.TunMode {
 		elevated, err := backend.IsProcessElevated()
 		if err != nil {
 			return err
@@ -170,7 +169,7 @@ func (a *App) Start(options LaunchOptions) error {
 		}
 	}
 
-	return a.proxy.Start(options)
+	return a.proxy.Start(backendOptions)
 }
 
 func (a *App) Stop() error {
@@ -196,16 +195,17 @@ func (a *App) IsRunning() bool {
 
 func (a *App) GetSavedLaunchOptions() (LaunchOptions, error) {
 	if a.store == nil {
-		return backend.DefaultLaunchOptions(), errors.New("settings store not initialized")
+		return launchOptionsFromBackend(backend.DefaultLaunchOptions()), errors.New("settings store not initialized")
 	}
-	return a.store.Load()
+	options, err := a.store.Load()
+	return launchOptionsFromBackend(options), err
 }
 
 func (a *App) SaveLaunchOptions(options LaunchOptions) error {
 	if a.store == nil {
 		return errors.New("settings store not initialized")
 	}
-	return a.store.Save(options)
+	return a.store.Save(options.toBackend())
 }
 
 func (a *App) ResumePendingConnect() (bool, error) {
