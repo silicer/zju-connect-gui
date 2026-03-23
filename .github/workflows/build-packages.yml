@@ -1,0 +1,237 @@
+name: build-packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - ci/package-build-matrix
+  pull_request:
+    branches:
+      - master
+      - ci/package-build-matrix
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: zju-connect-gui
+  GO_VERSION: '1.25.6'
+  NODE_VERSION: '20'
+  NODE_OPTIONS: --max-old-space-size=4096
+  WAILS_VERSION: v2.11.0
+  ZJU_CONNECT_REF: 5c0ac04ade80f90a67038aec240d470f122782e5
+  WINTUN_URL: https://www.wintun.net/builds/wintun-0.14.1.zip
+
+jobs:
+  verify:
+    name: Verify repository
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run backend tests
+        run: go test ./internal/backend
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend assets
+        working-directory: frontend
+        run: npm run build
+
+  package:
+    name: Package ${{ matrix.target_os }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_os: windows
+            goos: windows
+            goarch: amd64
+            runner: windows-latest
+            archive_suffix: .zip
+            wintun_arch: amd64
+          - target_os: windows
+            goos: windows
+            goarch: arm64
+            runner: windows-11-arm
+            archive_suffix: .zip
+            wintun_arch: arm64
+          - target_os: linux
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            archive_suffix: .tar.gz
+            wintun_arch: ''
+          - target_os: linux
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            archive_suffix: .tar.gz
+            wintun_arch: ''
+          - target_os: macos
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            archive_suffix: .zip
+            wintun_arch: ''
+          - target_os: macos
+            goos: darwin
+            goarch: arm64
+            runner: macos-14
+            archive_suffix: .zip
+            wintun_arch: ''
+
+    env:
+      TARGET_OS: ${{ matrix.target_os }}
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      ARTIFACT_NAME: ${{ format('zju-connect-gui-{0}-{1}', matrix.target_os, matrix.goarch) }}
+      ARCHIVE_PATH: ${{ format('dist/zju-connect-gui-{0}-{1}{2}', matrix.target_os, matrix.goarch, matrix.archive_suffix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Checkout upstream zju-connect
+        uses: actions/checkout@v6
+        with:
+          repository: silicer/zju-connect
+          ref: ${{ env.ZJU_CONNECT_REF }}
+          path: _deps/zju-connect
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install Linux build dependencies
+        if: matrix.target_os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev xvfb x11-xserver-utils
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build upstream zju-connect
+        shell: bash
+        working-directory: _deps/zju-connect
+        run: |
+          mkdir -p "$RUNNER_TEMP/zju-connect-build"
+          output_name="zju-connect"
+          if [[ "$TARGET_OS" == "windows" ]]; then
+            output_name="zju-connect.exe"
+          fi
+          CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$RUNNER_TEMP/zju-connect-build/$output_name" .
+
+      - name: Download wintun runtime
+        if: matrix.target_os == 'windows'
+        shell: pwsh
+        run: |
+          $zipPath = Join-Path $env:RUNNER_TEMP 'wintun.zip'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'wintun'
+          Invoke-WebRequest -Uri $env:WINTUN_URL -OutFile $zipPath
+          if (Test-Path $extractRoot) {
+            Remove-Item -Recurse -Force $extractRoot
+          }
+          Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+
+      - name: Build Wails app (Linux)
+        if: matrix.target_os == 'linux'
+        shell: bash
+        run: xvfb-run --auto-servernum wails build -clean -platform "$GOOS/$GOARCH" -tags webkit2_41
+
+      - name: Build Wails app (non-Linux)
+        if: matrix.target_os != 'linux'
+        shell: bash
+        run: wails build -clean -platform "$GOOS/$GOARCH"
+
+      - name: Stage package contents
+        shell: bash
+        run: |
+          args=(
+            --workspace "$GITHUB_WORKSPACE"
+            --target-os "$TARGET_OS"
+            --arch "$GOARCH"
+            --artifact-name "$ARTIFACT_NAME"
+            --staging-root "$RUNNER_TEMP/stage"
+          )
+          if [[ "$TARGET_OS" == "windows" ]]; then
+            args+=(
+              --zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect.exe"
+              --wintun "$RUNNER_TEMP/wintun/wintun/bin/${{ matrix.wintun_arch }}/wintun.dll"
+            )
+          else
+            args+=(--zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect")
+          fi
+          python scripts/package_ci_artifact.py "${args[@]}"
+
+      - name: Create Linux archive
+        if: matrix.target_os == 'linux'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C "$RUNNER_TEMP/stage" -czf "$ARCHIVE_PATH" "$ARTIFACT_NAME"
+          test -f "$ARCHIVE_PATH"
+
+      - name: Create macOS archive
+        if: matrix.target_os == 'macos'
+        shell: bash
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/stage/$ARTIFACT_NAME/$APP_NAME.app" "$ARCHIVE_PATH"
+          test -f "$ARCHIVE_PATH"
+
+      - name: Create Windows archive
+        if: matrix.target_os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:GITHUB_WORKSPACE 'dist') | Out-Null
+          $source = Join-Path $env:RUNNER_TEMP (Join-Path 'stage' $env:ARTIFACT_NAME)
+          $destination = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_PATH
+          if (Test-Path $destination) {
+            Remove-Item -Force $destination
+          }
+          Compress-Archive -Path $source -DestinationPath $destination -Force
+          if (-not (Test-Path $destination)) {
+            throw "Archive missing: $destination"
+          }
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARCHIVE_PATH }}
+          archive: false
+          if-no-files-found: error
