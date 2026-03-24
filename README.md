@@ -1,19 +1,62 @@
-# README
+# zju-connect-gui
 
-## About
+`zju-connect-gui` is a Wails desktop wrapper around the `zju-connect` CLI. The Go backend manages process lifecycle,
+tray behavior, elevation, and persistence, while the Vue frontend provides a thin control surface for the fixed launch
+options exposed by the GUI.
 
-This is the official Wails Vue-TS template.
+## Branching and release flow
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+The repository now follows a three-layer branch model:
 
-## Live Development
+- `feature/*`: short-lived feature or fix branches. Daily development starts here, with one branch segment after `feature/`.
+- `dev`: integration branch. Feature branches merge into `dev` through pull requests.
+- `master`: stable branch. Once `dev` is validated, promote it into `master` through a pull request.
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+Release tags must be created from `master` after the promotion merge is complete. Tag names should use the `v*`
+pattern, such as `v1.0.0`.
 
-## Building
+## GitHub Actions CI
 
-To build a redistributable, production mode package, use `wails build`.
+The repository CI is split across two workflows:
+
+- `.github/workflows/ci.yml`: lightweight validation for `push` to `feature/*` and pull requests targeting `dev`
+- `.github/workflows/build-packages.yml`: repository verification for pull requests targeting `master`, plus packaging for pushes to `dev`, pushes to `master`, and manual `workflow_dispatch` runs
+
+Recommended required checks for branch protection should follow the target branch:
+
+- `dev` pull requests: `backend-test`, `frontend-build`
+- `dev` branch pushes: packaged artifacts from `.github/workflows/build-packages.yml` for integrated product testing
+- `master` pull requests: `Verify repository`
+- `master` branch pushes: packaged artifacts from `.github/workflows/build-packages.yml` for release preparation from the merged commit
+
+This split keeps feature-branch feedback fast, produces integrated testable packages from `dev`, lets `master` pull
+requests act as a release gate, and generates final release-preparation artifacts only after the merge lands on `master`.
+
+Tags are still created after the `master` promotion merge, but in this minimal setup they do not trigger a separate GitHub Actions
+workflow.
+
+## Local development
+
+Run the app in live development mode:
+
+```bash
+wails dev
+```
+
+Build the frontend bundle:
+
+```bash
+cd frontend && npm run build
+```
+
+Run backend tests:
+
+```bash
+go test ./internal/backend
+```
+
+Build the Windows desktop package:
+
+```bash
+wails build -platform windows/amd64 -skipbindings
+```

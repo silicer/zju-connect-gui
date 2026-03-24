@@ -4,12 +4,11 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - dev
       - master
-      - ci/package-build-matrix
   pull_request:
     branches:
       - master
-      - ci/package-build-matrix
 
 permissions:
   contents: read
@@ -56,6 +55,7 @@ jobs:
   package:
     name: Package ${{ matrix.target_os }}/${{ matrix.goarch }}
     needs: verify
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
