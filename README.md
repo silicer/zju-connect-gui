@@ -8,7 +8,7 @@ options exposed by the GUI.
 
 - Automatic reconnect is **session-scoped inside the running desktop app**, not a system daemon or background service.
 - When the `zju-connect` child process exits unexpectedly, the GUI retries automatically with **exponential backoff**.
-- A successful connection resets the backoff window after the backend reports `VPN client started`.
+- A successful connection resets the backoff window after the backend confirms the mode-specific readiness gate.
 - Clicking **Stop** cancels any pending retry and suppresses further reconnect attempts until the user starts again.
 - If the connection is interrupted while waiting for manual input such as SMS, callback URL, or captcha, the current
   session stops and the user must start a new connection manually.

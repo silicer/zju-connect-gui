@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,28 +29,32 @@ type ProxyManager struct {
 	appDir string
 	ctx    context.Context
 
-	mu              sync.Mutex
-	cmd             *exec.Cmd
-	stdin           io.WriteCloser
-	waitDone        chan struct{}
-	logCancel       context.CancelFunc
-	awaiting        string
-	captchaPoll     bool
-	captchaPath     string
-	eipOpened       bool
-	eipOptions      LaunchOptions
-	elevated        bool
-	elevatedPID     int
-	sessionActive   bool
-	lastOptions     LaunchOptions
-	retryAttempt    int
-	retryTimer      retryTimer
-	retryGeneration uint64
-	retryBaseDelay  time.Duration
-	retryMaxDelay   time.Duration
-	afterFunc       func(time.Duration, func()) retryTimer
-	retryJitter     func(time.Duration, int) time.Duration
-	startProcess    func(string, LaunchOptions) error
+	mu               sync.Mutex
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	waitDone         chan struct{}
+	logCancel        context.CancelFunc
+	awaiting         string
+	captchaPoll      bool
+	captchaPath      string
+	eipOpened        bool
+	eipOptions       LaunchOptions
+	elevated         bool
+	elevatedPID      int
+	ready            bool
+	readyWaitGen     uint64
+	sessionActive    bool
+	lastOptions      LaunchOptions
+	retryAttempt     int
+	retryTimer       retryTimer
+	retryGeneration  uint64
+	retryBaseDelay   time.Duration
+	retryMaxDelay    time.Duration
+	afterFunc        func(time.Duration, func()) retryTimer
+	retryJitter      func(time.Duration, int) time.Duration
+	startProcess     func(string, LaunchOptions) error
+	waitForHTTPReady func(string, uint64)
+	openEIP          func(context.Context, LaunchOptions) error
 }
 
 func NewProxyManager(appDir string) *ProxyManager {
@@ -99,6 +104,8 @@ func (p *ProxyManager) Start(options LaunchOptions) error {
 	p.eipOptions = options
 	p.eipOpened = false
 	p.lastOptions = options
+	p.ready = false
+	p.readyWaitGen = 0
 	p.sessionActive = true
 	p.retryAttempt = 0
 	p.awaiting = ""
@@ -148,6 +155,8 @@ func (p *ProxyManager) Stop() error {
 	p.stopRetryTimerLocked()
 	p.sessionActive = false
 	p.retryAttempt = 0
+	p.ready = false
+	p.readyWaitGen = 0
 	p.awaiting = ""
 	p.captchaPoll = false
 	p.mu.Unlock()
@@ -612,14 +621,73 @@ func (p *ProxyManager) handleLogLine(line string) {
 	}
 	p.emit("log", trimmed)
 	p.detectPrompt(trimmed)
+	tunMode, httpBind := p.readinessMode()
+	if tunMode {
+		if isRouteAddedLine(trimmed) {
+			p.beginHTTPReadyWait(httpBind)
+		}
+		return
+	}
 	if isVPNClientStartedLine(trimmed) {
-		p.markConnected()
-		p.openEIPURLOnce()
+		p.beginHTTPReadyWait(httpBind)
 	}
 }
 
 func isVPNClientStartedLine(line string) bool {
 	return strings.Contains(strings.TrimSpace(line), "VPN client started")
+}
+
+func isRouteAddedLine(line string) bool {
+	return strings.Contains(strings.TrimSpace(line), "Add route to ")
+}
+
+func (p *ProxyManager) readinessMode() (bool, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.eipOptions.TunMode, p.eipOptions.HTTPBind
+}
+
+func (p *ProxyManager) beginHTTPReadyWait(bind string) {
+	p.mu.Lock()
+	if !p.sessionActive || p.ready || p.readyWaitGen == p.retryGeneration {
+		p.mu.Unlock()
+		return
+	}
+	generation := p.retryGeneration
+	p.readyWaitGen = generation
+	waitFn := p.waitForHTTPReady
+	p.mu.Unlock()
+
+	if bind == "" {
+		p.markReadyForGeneration(generation)
+		return
+	}
+	if waitFn == nil {
+		waitFn = p.waitForHTTPBindReady
+	}
+	go waitFn(bind, generation)
+}
+
+func (p *ProxyManager) waitForHTTPBindReady(bind string, generation uint64) {
+	target := readinessDialAddress(bind)
+	for {
+		if !p.shouldContinueReadyWait(generation) {
+			return
+		}
+		conn, err := net.DialTimeout("tcp", target, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			p.markReadyForGeneration(generation)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (p *ProxyManager) shouldContinueReadyWait(generation uint64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sessionActive && !p.ready && p.retryGeneration == generation && p.readyWaitGen == generation
 }
 
 func (p *ProxyManager) openEIPURLOnce() {
@@ -630,11 +698,15 @@ func (p *ProxyManager) openEIPURLOnce() {
 	}
 	ctx := p.ctx
 	options := p.eipOptions
+	openEIP := p.openEIP
 	p.eipOpened = true
 	p.mu.Unlock()
+	if openEIP == nil {
+		openEIP = OpenEIP
+	}
 
 	go func() {
-		if err := OpenEIP(ctx, options); err != nil {
+		if err := openEIP(ctx, options); err != nil {
 			p.mu.Lock()
 			p.eipOpened = false
 			p.mu.Unlock()
@@ -845,6 +917,8 @@ func (p *ProxyManager) startManaged(captchaPath string, options LaunchOptions) e
 func (p *ProxyManager) handleProcessExit(waitErr error) {
 	p.mu.Lock()
 	if !p.sessionActive {
+		p.ready = false
+		p.readyWaitGen = 0
 		p.retryAttempt = 0
 		p.mu.Unlock()
 		p.emitStateWithDetails("stopped", "", 0, 0)
@@ -853,6 +927,8 @@ func (p *ProxyManager) handleProcessExit(waitErr error) {
 	if p.awaiting != "" {
 		blockedReason := p.awaiting
 		p.sessionActive = false
+		p.ready = false
+		p.readyWaitGen = 0
 		p.retryAttempt = 0
 		p.awaiting = ""
 		p.captchaPoll = false
@@ -861,6 +937,8 @@ func (p *ProxyManager) handleProcessExit(waitErr error) {
 		p.emitStateWithDetails("stopped", fmt.Sprintf("连接在等待 %s 时中断，请手动重新连接", blockedReason), 0, 0)
 		return
 	}
+	p.ready = false
+	p.retryGeneration++
 
 	attempt, delay := p.scheduleRetryLocked()
 	p.mu.Unlock()
@@ -895,11 +973,39 @@ func (p *ProxyManager) runRetryAttempt(generation uint64) {
 	}
 }
 
-func (p *ProxyManager) markConnected() {
+func (p *ProxyManager) markReady() {
 	p.mu.Lock()
+	generation := p.retryGeneration
+	p.mu.Unlock()
+	p.markReadyForGeneration(generation)
+}
+
+func (p *ProxyManager) markReadyForGeneration(generation uint64) {
+	p.mu.Lock()
+	if generation != p.retryGeneration || !p.sessionActive || p.ready {
+		p.mu.Unlock()
+		return
+	}
+	p.ready = true
+	p.readyWaitGen = 0
 	p.retryAttempt = 0
 	p.mu.Unlock()
-	p.emitStateWithDetails("connected", "", 0, 0)
+	p.emitStateWithDetails("connected", "已启动", 0, 0)
+	p.openEIPURLOnce()
+}
+
+func readinessDialAddress(bind string) string {
+	host, port, err := net.SplitHostPort(bind)
+	if err != nil {
+		return bind
+	}
+	switch host {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func (p *ProxyManager) nextRetryDelayLocked(attempt int) time.Duration {

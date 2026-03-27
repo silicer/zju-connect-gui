@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -49,6 +50,7 @@ func testLaunchOptions() LaunchOptions {
 func primeReconnectSession(p *ProxyManager, options LaunchOptions) {
 	p.mu.Lock()
 	p.sessionActive = true
+	p.eipOptions = options
 	p.lastOptions = options
 	p.captchaPath = "gui_captcha.png"
 	p.retryGeneration = 1
@@ -72,6 +74,28 @@ func TestIsVPNClientStartedLine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isVPNClientStartedLine(tt.line); got != tt.want {
 				t.Fatalf("isVPNClientStartedLine(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRouteAddedLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "exact match", line: "Add route to 10.0.0.0/8", want: true},
+		{name: "embedded in log", line: "INFO Add route to 10.0.0.0/8", want: true},
+		{name: "trimmed match", line: "  Add route to 10.0.0.0/8  ", want: true},
+		{name: "different message", line: "Added route to 10.0.0.0/8", want: false},
+		{name: "empty", line: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRouteAddedLine(tt.line); got != tt.want {
+				t.Fatalf("isRouteAddedLine(%q) = %v, want %v", tt.line, got, tt.want)
 			}
 		})
 	}
@@ -146,9 +170,21 @@ func TestManualStopSuppressesReconnect(t *testing.T) {
 func TestSuccessfulStartResetsBackoff(t *testing.T) {
 	p, scheduled := newTestProxyManager()
 	options := testLaunchOptions()
+	options.TunMode = false
 	primeReconnectSession(p, options)
 
 	p.startProcess = func(string, LaunchOptions) error {
+		return nil
+	}
+	ready := make(chan struct{}, 1)
+	p.waitForHTTPReady = func(bind string, generation uint64) {
+		if bind != options.HTTPBind {
+			t.Fatalf("unexpected HTTP bind: %s", bind)
+		}
+		p.markReadyForGeneration(generation)
+		ready <- struct{}{}
+	}
+	p.openEIP = func(context.Context, LaunchOptions) error {
 		return nil
 	}
 
@@ -162,6 +198,11 @@ func TestSuccessfulStartResetsBackoff(t *testing.T) {
 
 	(*scheduled)[0].fn()
 	p.handleLogLine("VPN client started")
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP readiness callback")
+	}
 	p.handleProcessExit(errors.New("second disconnect"))
 
 	if len(*scheduled) != 2 {
@@ -276,15 +317,323 @@ func TestInvalidStartDoesNotCancelPendingRetry(t *testing.T) {
 func TestReadStreamFlushesFinalSuccessLine(t *testing.T) {
 	p, _ := newTestProxyManager()
 	p.mu.Lock()
+	p.sessionActive = true
+	p.retryGeneration = 1
+	p.eipOptions = testLaunchOptions()
+	p.eipOptions.TunMode = false
 	p.retryAttempt = 3
 	p.mu.Unlock()
+	ready := make(chan struct{}, 1)
+	p.waitForHTTPReady = func(bind string, generation uint64) {
+		p.markReadyForGeneration(generation)
+		ready <- struct{}{}
+	}
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		return nil
+	}
 
 	p.readStream(context.TODO(), strings.NewReader("VPN client started"))
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP readiness callback")
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.retryAttempt != 0 {
 		t.Fatalf("expected flushed success line to reset retryAttempt, got %d", p.retryAttempt)
+	}
+	if !p.ready {
+		t.Fatal("expected flushed success line to mark session ready after HTTP bind probe")
+	}
+}
+
+func TestNonTunStartWaitsForHTTPBindBeforeConnected(t *testing.T) {
+	p, _ := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	primeReconnectSession(p, options)
+
+	called := make(chan uint64, 1)
+	p.waitForHTTPReady = func(bind string, generation uint64) {
+		if bind != options.HTTPBind {
+			t.Fatalf("unexpected HTTP bind: %s", bind)
+		}
+		called <- generation
+	}
+
+	p.mu.Lock()
+	p.retryAttempt = 3
+	p.mu.Unlock()
+
+	p.handleLogLine("VPN client started")
+
+	var generation uint64
+	select {
+	case generation = <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP readiness wait to start")
+	}
+
+	p.mu.Lock()
+	if p.retryAttempt != 3 {
+		p.mu.Unlock()
+		t.Fatalf("expected retryAttempt to remain unchanged before HTTP bind is ready, got %d", p.retryAttempt)
+	}
+	if p.ready {
+		p.mu.Unlock()
+		t.Fatal("expected session to remain not ready before HTTP bind is ready")
+	}
+	p.mu.Unlock()
+
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		return nil
+	}
+	p.markReadyForGeneration(generation)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retryAttempt != 0 {
+		t.Fatalf("expected retryAttempt reset after HTTP bind became ready, got %d", p.retryAttempt)
+	}
+	if !p.ready {
+		t.Fatal("expected session ready after HTTP bind became ready")
+	}
+}
+
+func TestTunStartWaitsForAddRouteLogBeforeConnected(t *testing.T) {
+	p, _ := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = true
+	primeReconnectSession(p, options)
+
+	p.mu.Lock()
+	p.retryAttempt = 3
+	p.mu.Unlock()
+	called := make(chan uint64, 1)
+	p.waitForHTTPReady = func(bind string, generation uint64) {
+		if bind != options.HTTPBind {
+			t.Fatalf("unexpected HTTP bind: %s", bind)
+		}
+		called <- generation
+	}
+
+	p.handleLogLine("VPN client started")
+	p.mu.Lock()
+	if p.retryAttempt != 3 {
+		p.mu.Unlock()
+		t.Fatalf("expected TUN mode to ignore VPN client started for readiness, got retryAttempt %d", p.retryAttempt)
+	}
+	if p.ready {
+		p.mu.Unlock()
+		t.Fatal("expected TUN mode to remain not ready before route log")
+	}
+	p.mu.Unlock()
+
+	p.handleLogLine("Add route to 10.0.0.0/8")
+	var generation uint64
+	select {
+	case generation = <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for TUN readiness wait to start")
+	}
+
+	p.mu.Lock()
+	if p.retryAttempt != 3 {
+		p.mu.Unlock()
+		t.Fatalf("expected route signal alone not to reset retryAttempt, got %d", p.retryAttempt)
+	}
+	if p.ready {
+		p.mu.Unlock()
+		t.Fatal("expected route signal alone not to mark session ready")
+	}
+	p.mu.Unlock()
+
+	ready := make(chan struct{}, 1)
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		ready <- struct{}{}
+		return nil
+	}
+	p.markReadyForGeneration(generation)
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for TUN HTTP readiness to open EIP")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retryAttempt != 0 {
+		t.Fatalf("expected retryAttempt reset after TUN readiness completed, got %d", p.retryAttempt)
+	}
+	if !p.ready {
+		t.Fatal("expected session ready after TUN readiness completed")
+	}
+}
+
+func TestRouteLogDoesNotConnectInNonTunMode(t *testing.T) {
+	p, _ := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	primeReconnectSession(p, options)
+
+	p.mu.Lock()
+	p.retryAttempt = 2
+	p.mu.Unlock()
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		t.Fatal("did not expect EIP open in non-TUN route log test")
+		return nil
+	}
+
+	p.handleLogLine("Add route to 10.0.0.0/8")
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retryAttempt != 2 {
+		t.Fatalf("expected route log ignored in non-TUN mode, got retryAttempt %d", p.retryAttempt)
+	}
+	if p.ready {
+		t.Fatal("expected route log ignored in non-TUN mode")
+	}
+}
+
+func TestStaleHTTPReadyResultIgnoredAfterStop(t *testing.T) {
+	p, _ := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	primeReconnectSession(p, options)
+
+	called := make(chan uint64, 1)
+	p.waitForHTTPReady = func(_ string, generation uint64) {
+		called <- generation
+	}
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		t.Fatal("did not expect stale readiness result to open EIP")
+		return nil
+	}
+
+	p.handleLogLine("VPN client started")
+
+	var generation uint64
+	select {
+	case generation = <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP readiness wait to start")
+	}
+
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop() returned error: %v", err)
+	}
+	p.markReadyForGeneration(generation)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ready {
+		t.Fatal("expected stale readiness result to be ignored after Stop")
+	}
+}
+
+func TestMarkReadyOpensEIPOnlyOnce(t *testing.T) {
+	p, _ := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = true
+	primeReconnectSession(p, options)
+
+	var mu sync.Mutex
+	openCalls := 0
+	opened := make(chan struct{}, 1)
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		mu.Lock()
+		openCalls++
+		mu.Unlock()
+		opened <- struct{}{}
+		return nil
+	}
+
+	p.markReadyForGeneration(1)
+	select {
+	case <-opened:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first EIP open")
+	}
+	p.markReadyForGeneration(1)
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if openCalls != 1 {
+		t.Fatalf("expected EIP to open once, got %d calls", openCalls)
+	}
+}
+
+func TestReadStreamFlushesFinalRouteLine(t *testing.T) {
+	p, _ := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = true
+	primeReconnectSession(p, options)
+
+	p.mu.Lock()
+	p.retryAttempt = 3
+	p.mu.Unlock()
+	readyWait := make(chan struct{}, 1)
+	p.waitForHTTPReady = func(bind string, generation uint64) {
+		if bind != options.HTTPBind {
+			t.Fatalf("unexpected HTTP bind: %s", bind)
+		}
+		p.markReadyForGeneration(generation)
+		readyWait <- struct{}{}
+	}
+	p.openEIP = func(context.Context, LaunchOptions) error {
+		return nil
+	}
+
+	p.readStream(context.TODO(), strings.NewReader("Add route to 10.0.0.0/8"))
+	select {
+	case <-readyWait:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for flushed route line readiness wait")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retryAttempt != 0 {
+		t.Fatalf("expected flushed route line to reset retryAttempt, got %d", p.retryAttempt)
+	}
+	if !p.ready {
+		t.Fatal("expected flushed route line to mark session ready")
+	}
+}
+
+func TestStaleHTTPReadyResultIgnoredAfterUnexpectedExit(t *testing.T) {
+	p, scheduled := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	primeReconnectSession(p, options)
+
+	called := make(chan uint64, 1)
+	p.waitForHTTPReady = func(_ string, generation uint64) {
+		called <- generation
+	}
+	p.handleLogLine("VPN client started")
+
+	var generation uint64
+	select {
+	case generation = <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for HTTP readiness wait to start")
+	}
+
+	p.handleProcessExit(errors.New("network lost"))
+	if len(*scheduled) != 1 {
+		t.Fatalf("expected reconnect schedule after unexpected exit, got %d", len(*scheduled))
+	}
+	p.markReadyForGeneration(generation)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ready {
+		t.Fatal("expected stale readiness result to be ignored after unexpected exit")
 	}
 }
 

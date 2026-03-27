@@ -72,17 +72,13 @@ const appendLog = (line: string) => {
   if (logs.value.length > 1000) {
     logs.value.shift();
   }
-  if (autoScroll.value) {
-    nextTick(() => {
-      if (logContainer.value) {
-        logContainer.value.scrollTop = logContainer.value.scrollHeight;
-      }
-    });
-  }
-
-  if (line.includes('VPN client started')) {
-    statusMessage.value = '已启动';
-  }
+	if (autoScroll.value) {
+	  nextTick(() => {
+	    if (logContainer.value) {
+	      logContainer.value.scrollTop = logContainer.value.scrollHeight;
+	    }
+	  });
+	}
 };
 
 const closeModal = () => {
