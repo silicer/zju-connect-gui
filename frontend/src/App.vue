@@ -324,12 +324,16 @@ onMounted(() => {
     appendLog(line);
   });
 
-  cleanupState = EventsOn('state', (payload: { running?: boolean; awaiting?: string }) => {
+  cleanupState = EventsOn('state', (payload: { state?: string; running?: boolean; awaiting?: string; message?: string }) => {
     if (typeof payload.running === 'boolean') {
       running.value = payload.running;
     }
-    if (payload.awaiting) {
+    if (payload.message) {
+      statusMessage.value = payload.message;
+    } else if (payload.awaiting) {
       statusMessage.value = `等待输入: ${payload.awaiting}`;
+    } else if (payload.state === 'stopped' && !payload.running) {
+      statusMessage.value = '已断开';
     }
   });
 
