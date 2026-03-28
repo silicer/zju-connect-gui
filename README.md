@@ -57,6 +57,7 @@ wails dev
 Build the frontend bundle:
 
 ```bash
+mkdir -p frontend/dist && touch frontend/dist/.gitkeep
 wails generate module
 cd frontend && npm run build
 ```
