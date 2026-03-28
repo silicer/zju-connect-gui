@@ -57,6 +57,7 @@ wails dev
 Build the frontend bundle:
 
 ```bash
+wails generate module
 cd frontend && npm run build
 ```
 
