@@ -57,6 +57,9 @@ jobs:
           go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Ensure frontend dist placeholder exists
+        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
+
       - name: Generate Wails bindings
         run: wails generate module
 
