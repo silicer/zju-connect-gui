@@ -532,20 +532,6 @@ onUnmounted(() => {
             <h1 class="app-title">ZJU Connect GUI</h1>
             <p class="app-subtitle">基于 zju-connect CLI 的桌面控制台</p>
           </div>
-          <button
-            v-if="!running"
-            class="app-button app-button--primary"
-            @click="handleStart"
-          >
-            连接
-          </button>
-          <button
-            v-else
-            class="app-button app-button--danger"
-            @click="handleStop"
-          >
-            断开
-          </button>
         </div>
         <p v-if="statusMessage" class="status-banner">{{ statusMessage }}</p>
       </header>
@@ -719,6 +705,24 @@ onUnmounted(() => {
               </div>
             </details>
 
+            <button
+              v-if="!running"
+              type="button"
+              class="app-button app-button--primary settings-fab"
+              aria-label="开始连接"
+              @click="handleStart"
+            >
+              <span class="settings-fab__icon settings-fab__icon--start" aria-hidden="true"></span>
+            </button>
+            <button
+              v-else
+              type="button"
+              class="app-button app-button--danger settings-fab"
+              aria-label="断开连接"
+              @click="handleStop"
+            >
+              <span class="settings-fab__icon settings-fab__icon--stop" aria-hidden="true"></span>
+            </button>
           </div>
         </section>
 

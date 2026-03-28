@@ -47,6 +47,8 @@
     --log-height: 32.5rem;
     --window-control-size: calc(var(--space-6) + var(--space-2));
     --window-control-icon-size: var(--space-3);
+    --floating-action-size: calc(var(--space-8) + var(--space-2));
+    --floating-action-icon-size: var(--space-5);
     --icon-stroke: 0.125rem;
     --motion-fast: 160ms;
     --motion-mid: 220ms;
@@ -406,9 +408,48 @@ textarea {
     }
 
     .settings-card {
+        position: relative;
         display: grid;
         gap: var(--space-5);
         padding: var(--space-6);
+        padding-bottom: calc(var(--space-8) + var(--space-8));
+    }
+
+    .settings-fab {
+        position: absolute;
+        right: var(--space-5);
+        bottom: var(--space-5);
+        width: var(--floating-action-size);
+        height: var(--floating-action-size);
+        min-width: 0;
+        padding: 0;
+        z-index: 1;
+    }
+
+    .settings-fab__icon {
+        position: relative;
+        display: block;
+        width: var(--floating-action-icon-size);
+        height: var(--floating-action-icon-size);
+        pointer-events: none;
+    }
+
+    .settings-fab__icon::before {
+        content: "";
+        position: absolute;
+        display: block;
+    }
+
+    .settings-fab__icon--start::before {
+        inset: var(--space-1) 0 var(--space-1) var(--space-1);
+        background: currentColor;
+        clip-path: polygon(0 0, 100% 50%, 0 100%);
+    }
+
+    .settings-fab__icon--stop::before {
+        inset: var(--space-1);
+        border-radius: calc(var(--radius-s) / 2);
+        background: currentColor;
     }
 
     .info-banner {
@@ -938,6 +979,15 @@ textarea {
     .settings-card,
     .modal-card {
         padding: var(--space-5);
+    }
+
+    .settings-card {
+        padding-bottom: calc(var(--space-8) + var(--space-7));
+    }
+
+    .settings-fab {
+        right: var(--space-4);
+        bottom: var(--space-4);
     }
 
     .app-header__bar,
