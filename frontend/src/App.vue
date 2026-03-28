@@ -2,17 +2,22 @@
 import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
 import {EventsOn} from '../wailsjs/runtime/runtime';
 import type {main} from '../wailsjs/go/models';
-import {GetSavedLaunchOptions, IsRunning, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
+import {GetSavedLaunchOptions, IsRunning, PickEIPBrowserProgram, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
 
 type LaunchOptions = main.LaunchOptions;
+type LogEntry = {
+  id: number;
+  line: string;
+};
 
 const running = ref(false);
 const statusMessage = ref('');
-const logs = ref<string[]>([]);
+const logs = ref<LogEntry[]>([]);
 const logContainer = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 
 const fixedPort = 443;
+const maxLogEntries = 1000;
 const username = ref('');
 const password = ref('');
 const socksBind = ref('127.0.0.1:1080');
@@ -20,7 +25,6 @@ const httpBind = ref('127.0.0.1:8888');
 const proxyOnlyMode = ref(false);
 const debugDump = ref(false);
 const activeTab = ref<'config' | 'logs'>('config');
-const fixedOptionsExpanded = ref(false);
 const eipOptionsExpanded = ref(false);
 const eipBrowserProgram = ref('');
 const eipBrowserArgs = ref('');
@@ -40,6 +44,8 @@ const captchaSrc = computed(() => {
   }
   return `data:image/png;base64,${captchaBase64.value}`;
 });
+
+let nextLogId = 0;
 
 const extractCaptchaBase64 = (payload: unknown): string | null => {
   if (typeof payload === 'string') {
@@ -68,9 +74,13 @@ const extractCaptchaBase64 = (payload: unknown): string | null => {
 };
 
 const appendLog = (line: string) => {
-  logs.value.push(line);
-  if (logs.value.length > 1000) {
-    logs.value.shift();
+  logs.value.push({
+    id: nextLogId,
+    line,
+  });
+  nextLogId += 1;
+  if (logs.value.length > maxLogEntries) {
+    logs.value = logs.value.slice(-maxLogEntries);
   }
 	if (autoScroll.value) {
 	  nextTick(() => {
@@ -296,6 +306,30 @@ const handleStop = async () => {
   }
 };
 
+const handlePickEIPBrowserProgram = async () => {
+  const currentValue = eipBrowserProgram.value;
+  try {
+    const selected = await PickEIPBrowserProgram();
+    if (typeof selected === 'string' && selected.trim()) {
+      eipBrowserProgram.value = selected;
+      statusMessage.value = '已更新浏览器程序路径';
+      return;
+    }
+  } catch (error) {
+    statusMessage.value = error instanceof Error && error.message
+      ? `选择浏览器程序失败：${error.message}`
+      : '选择浏览器程序失败';
+    eipBrowserProgram.value = currentValue;
+    return;
+  }
+
+  eipBrowserProgram.value = currentValue;
+};
+
+const clearEIPBrowserProgram = () => {
+  eipBrowserProgram.value = '';
+};
+
 let cleanupLog = () => {};
 let cleanupState = () => {};
 let cleanupCaptcha = () => {};
@@ -397,221 +431,269 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="min-h-full bg-[#F2F2F2] text-slate-800">
-    <header class="border-b border-slate-300 bg-white px-6 py-4 shadow-sm">
-      <div class="flex items-center justify-between">
-        <div>
-          <h1 class="text-xl font-semibold">ZJU Connect GUI</h1>
-          <p class="text-sm text-slate-500">基于 zju-connect CLI 的桌面控制台</p>
+  <div class="app-shell">
+    <div class="app-frame">
+      <header class="panel-surface app-header">
+        <div class="app-header__bar">
+          <div class="app-heading">
+            <h1 class="app-title">ZJU Connect GUI</h1>
+            <p class="app-subtitle">基于 zju-connect CLI 的桌面控制台</p>
+          </div>
+          <button
+            v-if="!running"
+            class="app-button app-button--primary"
+            @click="handleStart"
+          >
+            连接
+          </button>
+          <button
+            v-else
+            class="app-button app-button--danger"
+            @click="handleStop"
+          >
+            断开
+          </button>
         </div>
-        <button
-          v-if="!running"
-          class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600"
-          @click="handleStart"
-        >
-          连接
-        </button>
-        <button
-          v-else
-          class="rounded-lg bg-rose-500 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-600"
-          @click="handleStop"
-        >
-          断开
-        </button>
-      </div>
-      <p v-if="statusMessage" class="mt-2 text-sm text-amber-700">{{ statusMessage }}</p>
-    </header>
+        <p v-if="statusMessage" class="status-banner">{{ statusMessage }}</p>
+      </header>
 
-    <main class="px-6 py-6">
-      <div class="mb-4 inline-flex rounded-xl border border-slate-300 bg-white p-1 shadow-sm">
-        <button
-          class="rounded-lg px-4 py-2 text-sm font-semibold"
-          :class="activeTab === 'config' ? 'bg-emerald-500 text-white' : 'text-slate-600 hover:bg-slate-100'"
-          @click="activeTab = 'config'"
-        >
-          配置
-        </button>
-        <button
-          class="rounded-lg px-4 py-2 text-sm font-semibold"
-          :class="activeTab === 'logs' ? 'bg-emerald-500 text-white' : 'text-slate-600 hover:bg-slate-100'"
-          @click="activeTab = 'logs'"
-        >
-          日志
-        </button>
-      </div>
-
-      <section v-if="activeTab === 'config'" class="space-y-4">
-        <div>
-          <h2 class="text-lg font-semibold">启动参数</h2>
-          <p class="text-xs text-slate-500">仅保留界面可配置项，其余参数按预设值自动携带</p>
+      <main class="app-main">
+        <div class="tab-switcher">
+          <button
+            class="tab-switcher__button"
+            :class="{ 'is-active': activeTab === 'config' }"
+            @click="activeTab = 'config'"
+          >
+            配置
+          </button>
+          <button
+            class="tab-switcher__button"
+            :class="{ 'is-active': activeTab === 'logs' }"
+            @click="activeTab = 'logs'"
+          >
+            日志
+          </button>
         </div>
 
-        <div class="space-y-4 rounded-xl border border-slate-300 bg-white p-4">
-          <label class="block text-sm">
-            <span class="mb-1 block text-slate-600">用户名</span>
-            <input
-              v-model="username"
-              type="text"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
-            />
-          </label>
-
-          <label class="block text-sm">
-            <span class="mb-1 block text-slate-600">密码</span>
-            <input
-              v-model="password"
-              type="password"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
-            />
-          </label>
-
-          <label class="block text-sm">
-            <span class="mb-1 block text-slate-600">SOCKS 监听地址</span>
-            <input
-              v-model="socksBind"
-              type="text"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
-            />
-          </label>
-
-          <label class="block text-sm">
-            <span class="mb-1 block text-slate-600">HTTP 监听地址</span>
-            <input
-              v-model="httpBind"
-              type="text"
-              class="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
-            />
-          </label>
-
-          <div class="grid gap-3 sm:grid-cols-2">
-            <label class="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700">
-              <div class="flex items-center justify-between gap-3">
-                <span>仅代理模式</span>
-                <input v-model="proxyOnlyMode" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
-              </div>
-              <p class="mt-1 text-xs text-slate-500">如果不知道是什么，请不要打开。</p>
-            </label>
-
-            <label class="flex items-center justify-between rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700">
-              <span>调试模式</span>
-              <input v-model="debugDump" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
-            </label>
+        <section v-if="activeTab === 'config'" class="section-stack">
+          <div class="section-heading">
+            <h2 class="section-title">连接设置</h2>
+            <p class="section-copy">按需填写账号、本地代理监听地址和 EIP 打开方式即可。</p>
           </div>
 
-          <details class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600" :open="eipOptionsExpanded">
-            <summary
-              class="cursor-pointer select-none font-semibold text-slate-700"
-              @click.prevent="eipOptionsExpanded = !eipOptionsExpanded"
-            >
-              EIP 打开设置（默认折叠）
-            </summary>
-            <div v-if="eipOptionsExpanded" class="mt-3 space-y-3">
-              <label class="block text-sm">
-                <span class="mb-1 block text-slate-600">浏览器程序路径</span>
-                <input
-                  v-model="eipBrowserProgram"
-                  type="text"
-                  class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-800 outline-none focus:border-emerald-500"
-                  placeholder="留空则使用系统默认浏览器"
-                />
-              </label>
-
-              <label class="block text-sm">
-                <span class="mb-1 block text-slate-600">浏览器参数（每行一个）</span>
-                <textarea
-                  v-model="eipBrowserArgs"
-                  class="h-28 w-full rounded-lg border border-slate-300 bg-white p-3 text-slate-800 outline-none focus:border-emerald-500"
-                  placeholder="每行一个参数，启动时会自动在最后追加 URL"
-                ></textarea>
-              </label>
+          <div class="panel-surface settings-card">
+            <div class="info-banner">
+              <p class="info-banner__title">仅代理模式说明</p>
+              <p class="info-banner__copy">开启后，只提供本机 SOCKS 和 HTTP 代理端口，适合手动给浏览器或其他应用填写代理。</p>
+              <p class="info-banner__copy">关闭后，除了本地代理端口，还会额外启用 TUN / 系统路由接管，让系统流量按连接规则走。</p>
             </div>
-          </details>
 
-          <details class="rounded-lg bg-slate-100 p-3 text-xs text-slate-600" :open="fixedOptionsExpanded">
-            <summary
-              class="cursor-pointer select-none font-semibold text-slate-700"
-              @click.prevent="fixedOptionsExpanded = !fixedOptionsExpanded"
-            >
-              固定参数（默认折叠）
-            </summary>
-            <ul v-if="fixedOptionsExpanded" class="mt-2 list-inside list-disc space-y-1">
-              <li>-protocol atrust</li>
-              <li>-server sslvpn.scmcc.com.cn</li>
-              <li>-port 443</li>
-              <li>-disable-zju-config</li>
-              <li>-secondary-dns-server 223.5.5.5</li>
-              <li>-auth-type auth/psw</li>
-              <li>-login-domain AD</li>
-              <li>-client-data-file client_data.json</li>
-              <li>仅代理模式关闭时附加：-tun-mode -add-route -dns-hijack -fake-ip</li>
-              <li>调试开关开启时附加：-debug-dump</li>
-            </ul>
-          </details>
-        </div>
-      </section>
+            <div class="settings-group">
+              <div class="settings-group__header">
+                <h3 class="settings-group__title">账号认证</h3>
+                <p class="settings-group__copy">使用校园统一认证信息发起连接。</p>
+              </div>
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field__label">用户名</span>
+                  <input
+                    v-model="username"
+                    type="text"
+                    class="text-field"
+                  />
+                </label>
 
-      <section v-else class="space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold">运行日志</h2>
-          <div class="flex items-center gap-3 text-sm text-slate-600">
-            <label class="flex items-center gap-2">
-              <input v-model="autoScroll" type="checkbox" class="h-4 w-4 rounded border-slate-400" />
-              自动滚动
-            </label>
-            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="clearLogs">
-              清空
-            </button>
+                <label class="field">
+                  <span class="field__label">密码</span>
+                  <input
+                    v-model="password"
+                    type="password"
+                    class="text-field"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-divider"></div>
+
+            <div class="settings-group">
+              <div class="settings-group__header">
+                <h3 class="settings-group__title">本地代理</h3>
+                <p class="settings-group__copy">保持 SOCKS 与 HTTP 两组监听地址，供本机应用接入。</p>
+              </div>
+              <div class="field-grid">
+                <label class="field">
+                  <span class="field__label">SOCKS 监听地址</span>
+                  <input
+                    v-model="socksBind"
+                    type="text"
+                    class="text-field"
+                  />
+                </label>
+
+                <label class="field">
+                  <span class="field__label">HTTP 监听地址</span>
+                  <input
+                    v-model="httpBind"
+                    type="text"
+                    class="text-field"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-divider"></div>
+
+            <div class="settings-group">
+              <div class="settings-group__header">
+                <h3 class="settings-group__title">运行方式</h3>
+                <p class="settings-group__copy">调整连接模式与诊断输出，不改变现有控制逻辑。</p>
+              </div>
+              <div class="toggle-grid">
+                <label class="toggle-card">
+                  <div class="toggle-card__row">
+                    <div class="toggle-card__content">
+                      <span class="toggle-card__title">仅代理模式</span>
+                      <p class="toggle-card__copy">开启后仅保留本地 SOCKS / HTTP 代理；关闭后还会启用 TUN 与系统路由。</p>
+                    </div>
+                    <input v-model="proxyOnlyMode" type="checkbox" class="check-input" />
+                  </div>
+                </label>
+
+                <label class="toggle-card">
+                  <div class="toggle-card__row">
+                    <div class="toggle-card__content">
+                      <span class="toggle-card__title">调试模式</span>
+                      <p class="toggle-card__copy">保留更详细的诊断输出，便于排查连接问题。</p>
+                    </div>
+                    <input v-model="debugDump" type="checkbox" class="check-input" />
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-divider"></div>
+
+            <details class="advanced-card" :open="eipOptionsExpanded">
+              <summary
+                class="advanced-card__summary"
+                @click.prevent="eipOptionsExpanded = !eipOptionsExpanded"
+              >
+                <div class="advanced-card__heading">
+                  <span class="advanced-card__title">EIP 打开设置</span>
+                  <p class="advanced-card__copy">默认折叠，可按需指定浏览器程序和附加参数。</p>
+                </div>
+                <span class="advanced-card__hint">{{ eipOptionsExpanded ? '收起' : '展开' }}</span>
+              </summary>
+              <div v-if="eipOptionsExpanded" class="advanced-card__content">
+                <label class="field">
+                  <span class="field__label">浏览器程序路径</span>
+                  <div class="inline-field-row">
+                    <input
+                      v-model="eipBrowserProgram"
+                      type="text"
+                      class="text-field"
+                      placeholder="留空则使用系统默认浏览器"
+                    />
+                    <div class="inline-actions">
+                      <button
+                        type="button"
+                        class="app-button app-button--secondary"
+                        @click="handlePickEIPBrowserProgram"
+                      >
+                        浏览...
+                      </button>
+                      <button
+                        v-if="eipBrowserProgram"
+                        type="button"
+                        class="app-button app-button--ghost"
+                        @click="clearEIPBrowserProgram"
+                      >
+                        清空
+                      </button>
+                    </div>
+                  </div>
+                </label>
+
+                <label class="field">
+                  <span class="field__label">浏览器参数（每行一个）</span>
+                  <textarea
+                    v-model="eipBrowserArgs"
+                    class="text-area"
+                    placeholder="每行一个参数，启动时会自动在最后追加 URL"
+                  ></textarea>
+                </label>
+              </div>
+            </details>
           </div>
-        </div>
+        </section>
 
-        <div ref="logContainer" class="h-[520px] overflow-auto rounded-xl border border-slate-300 bg-white">
-          <div v-if="logs.length === 0" class="p-4 text-sm text-slate-400">暂无日志输出</div>
-          <ol v-else class="divide-y divide-slate-200 font-mono text-xs text-slate-700">
-            <li v-for="(line, index) in logs" :key="index" class="flex gap-3 px-4 py-2 leading-relaxed">
-              <span class="w-10 shrink-0 text-slate-400">{{ index + 1 }}</span>
-              <span class="whitespace-pre-wrap break-all">{{ line }}</span>
-            </li>
-          </ol>
-        </div>
-      </section>
-    </main>
+        <section v-else class="section-stack">
+          <div class="section-heading section-heading--split">
+            <div>
+              <h2 class="section-title">运行日志</h2>
+              <p class="section-copy">查看当前会话输出，保留自动滚动与清空控制。</p>
+            </div>
+            <div class="section-actions">
+              <label class="toggle-chip">
+                <input v-model="autoScroll" type="checkbox" class="check-input" />
+                <span>自动滚动</span>
+              </label>
+              <button class="app-button app-button--secondary app-button--small" @click="clearLogs">
+                清空
+              </button>
+            </div>
+          </div>
+
+          <div ref="logContainer" class="panel-surface log-panel">
+            <div v-if="logs.length === 0" class="log-empty">暂无日志输出</div>
+            <ol v-else class="log-list">
+              <li v-for="(entry, index) in logs" :key="entry.id" class="log-row">
+                <span class="log-row__index">{{ index + 1 }}</span>
+                <span class="log-row__text">{{ entry.line }}</span>
+              </li>
+            </ol>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <div
       v-if="modalOpen"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
+      class="modal-backdrop"
     >
-      <div class="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
-        <h3 class="text-lg font-semibold">{{ modalTitle }}</h3>
-        <p class="mt-2 text-sm text-slate-600">{{ modalPrompt }}</p>
-        <div v-if="modalType === 'captcha'" class="mt-4 space-y-3">
-          <div class="relative overflow-hidden rounded-lg border border-slate-300 bg-slate-100">
+      <div class="panel-surface modal-card">
+        <h3 class="modal-title">{{ modalTitle }}</h3>
+        <p class="modal-copy">{{ modalPrompt }}</p>
+        <div v-if="modalType === 'captcha'" class="modal-body">
+          <div class="captcha-frame">
             <img
               v-if="captchaBase64"
               :src="captchaSrc"
               alt="captcha"
-              class="block w-full cursor-crosshair"
+              class="captcha-image"
               @load="onCaptchaImageLoad"
               @click="onCaptchaImageClick"
             />
             <div
               v-for="(point, index) in captchaPoints"
               :key="`${point.x}-${point.y}-${index}`"
-              class="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+              class="captcha-marker"
               :style="markerStyle(point)"
             >
-              <div class="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white shadow">
+              <div class="captcha-marker__dot">
                 {{ index + 1 }}
               </div>
             </div>
           </div>
 
-          <div class="flex items-center gap-2 text-sm">
-            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="removeLastCaptchaPoint">撤销上一步</button>
-            <button class="rounded border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100" @click="clearCaptchaSelection">清空坐标</button>
-            <span class="text-slate-500">已选择 {{ captchaPoints.length }} 个点</span>
+          <div class="modal-inline-actions">
+            <button class="app-button app-button--secondary app-button--small" @click="removeLastCaptchaPoint">撤销上一步</button>
+            <button class="app-button app-button--ghost app-button--small" @click="clearCaptchaSelection">清空坐标</button>
+            <span class="points-chip">已选择 {{ captchaPoints.length }} 个点</span>
           </div>
 
-          <div class="max-h-24 overflow-auto rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">
+          <div class="coordinate-box">
             <span v-if="captchaPoints.length === 0">尚未选择坐标</span>
             <span v-else>{{ JSON.stringify(captchaPoints.map((point) => [point.x, point.y])) }}</span>
           </div>
@@ -620,12 +702,12 @@ onUnmounted(() => {
         <textarea
           v-else
           v-model="modalInput"
-          class="mt-4 h-28 w-full rounded-lg border border-slate-300 bg-white p-3 text-sm text-slate-700"
+          class="text-area text-area--modal"
           placeholder="请输入响应内容"
         ></textarea>
-        <div class="mt-4 flex justify-end gap-2">
-          <button class="rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-100" @click="closeModal">取消</button>
-          <button class="rounded bg-emerald-500 px-4 py-2 text-white hover:bg-emerald-600" @click="handleSubmit">提交</button>
+        <div class="modal-footer">
+          <button class="app-button app-button--ghost" @click="closeModal">取消</button>
+          <button class="app-button app-button--primary" @click="handleSubmit">提交</button>
         </div>
       </div>
     </div>
