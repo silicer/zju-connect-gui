@@ -1,6 +1,12 @@
 package backend
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestDefaultLaunchOptions_FixedDefaults(t *testing.T) {
 	defaults := DefaultLaunchOptions()
@@ -70,5 +76,32 @@ func TestUserSettingsStoreLoad_PreservesEIPBrowserSettings(t *testing.T) {
 	}
 	if options.EIPBrowserArgs[0] != "--new-window" || options.EIPBrowserArgs[1] != "--profile" {
 		t.Fatalf("unexpected normalized browser args: %#v", options.EIPBrowserArgs)
+	}
+}
+
+func TestPendingConnectStoreHasResumeConnect_ClearsStaleMarker(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewPendingConnectStore(tempDir)
+
+	stale, err := json.Marshal(pendingConnectState{
+		ResumeConnect: true,
+		CreatedAt:     time.Now().UTC().Add(-pendingConnectMaxAge - time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("marshal stale pending state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, pendingConnectFileName), stale, 0o600); err != nil {
+		t.Fatalf("write stale pending state: %v", err)
+	}
+
+	pending, err := store.HasResumeConnect()
+	if err != nil {
+		t.Fatalf("read pending state: %v", err)
+	}
+	if pending {
+		t.Fatal("expected stale pending state to be ignored")
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, pendingConnectFileName)); !os.IsNotExist(err) {
+		t.Fatalf("expected stale pending marker to be removed, stat err=%v", err)
 	}
 }
