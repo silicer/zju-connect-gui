@@ -1,8 +1,8 @@
 <script lang="ts" setup>
 import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
-import {EventsOn} from '../wailsjs/runtime/runtime';
+import {EventsOn, WindowIsMaximised, WindowMinimise, WindowToggleMaximise} from '../wailsjs/runtime/runtime';
 import type {main} from '../wailsjs/go/models';
-import {GetSavedLaunchOptions, IsRunning, PickEIPBrowserProgram, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
+import {GetSavedLaunchOptions, HideWindow, IsRunning, PickEIPBrowserProgram, ResumePendingConnect, SaveLaunchOptions, Start, Stop, SubmitInput} from '../wailsjs/go/main/App';
 
 type LaunchOptions = main.LaunchOptions;
 type LogEntry = {
@@ -33,10 +33,12 @@ const modalOpen = ref(false);
 const modalTitle = ref('');
 const modalPrompt = ref('');
 const modalInput = ref('');
+const modalInputKind = ref<'sms' | 'generic'>('generic');
 const captchaBase64 = ref<string | null>(null);
 const modalType = ref<'captcha' | 'input'>('input');
 const captchaPoints = ref<Array<{ x: number; y: number }>>([]);
 const captchaNaturalSize = ref<{ width: number; height: number } | null>(null);
+const windowMaximised = ref(false);
 
 const captchaSrc = computed(() => {
   if (!captchaBase64.value) {
@@ -44,6 +46,8 @@ const captchaSrc = computed(() => {
   }
   return `data:image/png;base64,${captchaBase64.value}`;
 });
+
+const isSmsPrompt = computed(() => modalType.value === 'input' && modalInputKind.value === 'sms');
 
 let nextLogId = 0;
 
@@ -94,6 +98,7 @@ const appendLog = (line: string) => {
 const closeModal = () => {
   modalOpen.value = false;
   modalInput.value = '';
+  modalInputKind.value = 'generic';
   captchaBase64.value = null;
   captchaNaturalSize.value = null;
   clearCaptchaSelection();
@@ -120,12 +125,49 @@ const openCaptchaModal = () => {
   modalOpen.value = true;
 };
 
-const openInputModal = (title: string, prompt: string) => {
+const openInputModal = (title: string, prompt: string, inputKind: 'sms' | 'generic' = 'generic') => {
   modalType.value = 'input';
   modalTitle.value = title;
   modalPrompt.value = prompt;
   modalInput.value = '';
+  modalInputKind.value = inputKind;
   modalOpen.value = true;
+};
+
+const syncWindowMaximised = async () => {
+  try {
+    windowMaximised.value = await WindowIsMaximised();
+  } catch {
+    windowMaximised.value = false;
+  }
+};
+
+const scheduleWindowMaximisedSync = () => {
+  window.requestAnimationFrame(() => {
+    void syncWindowMaximised();
+  });
+};
+
+const handleWindowMinimise = () => {
+  WindowMinimise();
+};
+
+const handleWindowToggleMaximise = () => {
+  WindowToggleMaximise();
+  windowMaximised.value = !windowMaximised.value;
+  scheduleWindowMaximisedSync();
+};
+
+const handleWindowHide = async () => {
+  try {
+    await HideWindow();
+  } catch (error) {
+    statusMessage.value = (error as Error).message;
+  }
+};
+
+const handleWindowResize = () => {
+  scheduleWindowMaximisedSync();
 };
 
 const clamp = (value: number, min: number, max: number) => {
@@ -280,6 +322,15 @@ const handleSubmit = async () => {
   }
 };
 
+const handleSmsInputKeydown = (event: KeyboardEvent) => {
+  if (event.key !== 'Enter' || event.isComposing) {
+    return;
+  }
+
+  event.preventDefault();
+  void handleSubmit();
+};
+
 const handleStart = async () => {
   statusMessage.value = '';
   const options = buildLaunchOptions();
@@ -378,8 +429,9 @@ onMounted(() => {
 
   cleanupInput = EventsOn('need-input', (payload: { type?: string; prompt?: string }) => {
     const prompt = payload?.prompt ?? '请输入内容';
-    const title = payload?.type === 'sms' ? '短信验证码' : '输入需求';
-    openInputModal(title, prompt);
+    const inputKind = payload?.type === 'sms' ? 'sms' : 'generic';
+    const title = inputKind === 'sms' ? '短信验证码' : '输入需求';
+    openInputModal(title, prompt, inputKind);
   });
 
   cleanupError = EventsOn('error', (message: string) => {
@@ -411,6 +463,9 @@ onMounted(() => {
     .catch((error) => {
       statusMessage.value = (error as Error).message;
     });
+
+  void syncWindowMaximised();
+  window.addEventListener('resize', handleWindowResize);
 });
 
 watch([username, password, socksBind, httpBind, eipBrowserProgram, eipBrowserArgs, proxyOnlyMode, debugDump], () => {
@@ -423,6 +478,7 @@ onUnmounted(() => {
   cleanupCaptcha();
   cleanupInput();
   cleanupError();
+  window.removeEventListener('resize', handleWindowResize);
   if (persistTimer) {
     clearTimeout(persistTimer);
     persistTimer = null;
@@ -433,6 +489,43 @@ onUnmounted(() => {
 <template>
   <div class="app-shell">
     <div class="app-frame">
+      <div class="panel-surface app-titlebar" @dblclick="handleWindowToggleMaximise">
+        <div class="app-titlebar__brand">
+          <span class="app-titlebar__mark" aria-hidden="true"></span>
+          <span class="app-titlebar__label">ZJU Connect GUI</span>
+        </div>
+        <div class="app-titlebar__controls" aria-label="窗口控制" @dblclick.stop>
+          <button
+            type="button"
+            class="window-control"
+            aria-label="最小化窗口"
+            @click="handleWindowMinimise"
+          >
+            <span class="window-control__glyph window-control__glyph--minimise" aria-hidden="true"></span>
+          </button>
+          <button
+            type="button"
+            class="window-control"
+            :aria-label="windowMaximised ? '还原窗口' : '最大化窗口'"
+            @click="handleWindowToggleMaximise"
+          >
+            <span
+              class="window-control__glyph"
+              :class="windowMaximised ? 'window-control__glyph--restore' : 'window-control__glyph--maximise'"
+              aria-hidden="true"
+            ></span>
+          </button>
+          <button
+            type="button"
+            class="window-control window-control--close"
+            aria-label="隐藏窗口到托盘"
+            @click="handleWindowHide"
+          >
+            <span class="window-control__glyph window-control__glyph--close" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+
       <header class="panel-surface app-header">
         <div class="app-header__bar">
           <div class="app-heading">
@@ -625,6 +718,7 @@ onUnmounted(() => {
                 </label>
               </div>
             </details>
+
           </div>
         </section>
 
@@ -662,7 +756,7 @@ onUnmounted(() => {
       v-if="modalOpen"
       class="modal-backdrop"
     >
-      <div class="panel-surface modal-card">
+      <div class="panel-surface modal-card" :class="{ 'modal-card--compact': isSmsPrompt }">
         <h3 class="modal-title">{{ modalTitle }}</h3>
         <p class="modal-copy">{{ modalPrompt }}</p>
         <div v-if="modalType === 'captcha'" class="modal-body">
@@ -698,6 +792,17 @@ onUnmounted(() => {
             <span v-else>{{ JSON.stringify(captchaPoints.map((point) => [point.x, point.y])) }}</span>
           </div>
         </div>
+
+        <input
+          v-else-if="isSmsPrompt"
+          v-model="modalInput"
+          type="text"
+          autocomplete="one-time-code"
+          spellcheck="false"
+          class="text-field text-field--modal-compact"
+          placeholder="请输入短信验证码"
+          @keydown="handleSmsInputKeydown"
+        />
 
         <textarea
           v-else

@@ -42,7 +42,12 @@
     --space-7: 2rem;
     --space-8: 2.5rem;
     --page-width: 70rem;
+    --modal-width: 42rem;
+    --modal-compact-width: 26rem;
     --log-height: 32.5rem;
+    --window-control-size: calc(var(--space-6) + var(--space-2));
+    --window-control-icon-size: var(--space-3);
+    --icon-stroke: 0.125rem;
     --motion-fast: 160ms;
     --motion-mid: 220ms;
     --font-body: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
@@ -122,6 +127,157 @@ textarea {
         width: min(100%, calc(var(--page-width) + (var(--space-7) * 2)));
         margin: 0 auto;
         padding: var(--space-7) var(--space-6) var(--space-8);
+    }
+
+    .app-titlebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-4);
+        margin-bottom: var(--space-4);
+        padding: var(--space-3) var(--space-4);
+        user-select: none;
+        --wails-draggable: drag;
+    }
+
+    .app-titlebar__brand {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        min-width: 0;
+    }
+
+    .app-titlebar__mark {
+        width: calc(var(--space-2) + var(--space-1));
+        height: calc(var(--space-2) + var(--space-1));
+        border-radius: var(--radius-pill);
+        background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+        box-shadow: 0 0 0 var(--space-1) var(--wash-accent);
+        flex-shrink: 0;
+    }
+
+    .app-titlebar__label {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--ink-body);
+        font-family: var(--font-display);
+        font-size: 0.84rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-overflow: ellipsis;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
+
+    .app-titlebar__controls {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        flex-shrink: 0;
+        --wails-draggable: no-drag;
+    }
+
+    .window-control {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: var(--window-control-size);
+        height: var(--window-control-size);
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-pill);
+        background: rgba(255, 255, 255, 0.88);
+        color: var(--ink-body);
+        cursor: pointer;
+        --wails-draggable: no-drag;
+        transition:
+            transform var(--motion-fast) ease,
+            border-color var(--motion-fast) ease,
+            background-color var(--motion-fast) ease,
+            box-shadow var(--motion-fast) ease,
+            color var(--motion-fast) ease;
+    }
+
+    .window-control:hover {
+        border-color: rgba(16, 185, 129, 0.24);
+        background: #ffffff;
+        box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+        transform: translateY(-1px);
+    }
+
+    .window-control:focus-visible {
+        outline: none;
+        box-shadow: var(--shadow-focus-soft);
+    }
+
+    .window-control--close:hover {
+        border-color: rgba(244, 63, 94, 0.2);
+        background: rgba(255, 241, 242, 0.96);
+        color: var(--danger-strong);
+    }
+
+    .window-control__glyph {
+        position: relative;
+        display: block;
+        width: var(--window-control-icon-size);
+        height: var(--window-control-icon-size);
+        pointer-events: none;
+    }
+
+    .window-control__glyph::before,
+    .window-control__glyph::after {
+        content: "";
+        position: absolute;
+        display: block;
+        box-sizing: border-box;
+    }
+
+    .window-control__glyph--minimise::before {
+        inset: auto 0 var(--space-1);
+        border-top: var(--icon-stroke) solid currentColor;
+    }
+
+    .window-control__glyph--maximise::before {
+        inset: var(--space-1) 0 0;
+        border: var(--icon-stroke) solid currentColor;
+        border-radius: calc(var(--radius-s) / 3);
+    }
+
+    .window-control__glyph--restore::before,
+    .window-control__glyph--restore::after {
+        width: calc(var(--window-control-icon-size) - var(--space-1));
+        height: calc(var(--window-control-icon-size) - var(--space-1));
+        border: var(--icon-stroke) solid currentColor;
+        border-radius: calc(var(--radius-s) / 3);
+    }
+
+    .window-control__glyph--restore::before {
+        top: var(--space-1);
+        left: 0;
+        background: var(--surface-primary);
+    }
+
+    .window-control__glyph--restore::after {
+        top: 0;
+        right: 0;
+        background: transparent;
+    }
+
+    .window-control__glyph--close::before,
+    .window-control__glyph--close::after {
+        top: 50%;
+        left: 50%;
+        width: calc(var(--window-control-icon-size) - var(--space-1));
+        border-top: var(--icon-stroke) solid currentColor;
+        transform-origin: center;
+    }
+
+    .window-control__glyph--close::before {
+        transform: translate(-50%, -50%) rotate(45deg);
+    }
+
+    .window-control__glyph--close::after {
+        transform: translate(-50%, -50%) rotate(-45deg);
     }
 
     .app-header {
@@ -373,6 +529,11 @@ textarea {
 
     .text-area--modal {
         margin-top: var(--space-5);
+    }
+
+    .text-field--modal-compact {
+        margin-top: var(--space-4);
+        padding: var(--space-3) var(--space-4);
     }
 
     .toggle-card,
@@ -647,8 +808,20 @@ textarea {
     }
 
     .modal-card {
-        width: min(100%, 42rem);
+        width: min(100%, var(--modal-width));
         padding: var(--space-6);
+    }
+
+    .modal-card--compact {
+        width: min(100%, var(--modal-compact-width));
+    }
+
+    .modal-card--compact .modal-copy {
+        max-width: 26ch;
+    }
+
+    .modal-card--compact .modal-footer {
+        margin-top: var(--space-4);
     }
 
     .modal-title {
@@ -755,6 +928,10 @@ textarea {
 @media (max-width: 720px) {
     .app-frame {
         padding: var(--space-5) var(--space-4) var(--space-6);
+    }
+
+    .app-titlebar {
+        padding: var(--space-3);
     }
 
     .app-header,
