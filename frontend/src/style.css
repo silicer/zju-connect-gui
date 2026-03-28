@@ -129,9 +129,9 @@ textarea {
         position: sticky;
         top: 0;
         z-index: 20;
-        width: min(100%, calc(var(--page-width) + (var(--space-7) * 2)));
-        margin: 0 auto;
-        padding: 0 var(--space-6);
+        width: 100%;
+        margin: 0;
+        padding: 0;
     }
 
     .app-frame {
@@ -147,6 +147,7 @@ textarea {
         gap: var(--space-4);
         width: 100%;
         padding: var(--space-3) var(--space-4);
+        border-radius: 0;
         user-select: none;
         --wails-draggable: drag;
     }
@@ -442,22 +443,30 @@ textarea {
         pointer-events: none;
     }
 
-    .settings-fab__icon::before {
+    .settings-fab__icon::before,
+    .settings-fab__icon::after {
         content: "";
         position: absolute;
         display: block;
+        top: 50%;
+        left: 50%;
     }
 
     .settings-fab__icon--start::before {
-        inset: var(--space-1) 0 var(--space-1) var(--space-1);
-        background: currentColor;
-        clip-path: polygon(0 0, 100% 50%, 0 100%);
+        width: 0;
+        height: 0;
+        border-top: calc(var(--floating-action-icon-size) * 0.46) solid transparent;
+        border-bottom: calc(var(--floating-action-icon-size) * 0.46) solid transparent;
+        border-left: calc(var(--floating-action-icon-size) * 0.8) solid currentColor;
+        transform: translate(-30%, -50%);
     }
 
     .settings-fab__icon--stop::before {
-        inset: var(--space-1);
-        border-radius: calc(var(--radius-s) / 2);
+        width: calc(var(--floating-action-icon-size) * 0.68);
+        height: calc(var(--floating-action-icon-size) * 0.68);
+        border-radius: calc(var(--radius-s) / 4);
         background: currentColor;
+        transform: translate(-50%, -50%);
     }
 
     .info-banner {
