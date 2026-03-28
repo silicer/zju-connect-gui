@@ -2,6 +2,10 @@ package main
 
 import (
 	"embed"
+	"os"
+	"time"
+
+	"zju-connect-gui/internal/backend"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -14,12 +18,22 @@ const singleInstanceID = "ab3d7e1f-f25e-44ee-9c66-d3f71f33c4d3"
 var assets embed.FS
 
 func main() {
+	relaunchArgs, err := backend.ParseElevatedRelaunchArgs(os.Args[1:])
+	if err != nil {
+		println("Error:", err.Error())
+		return
+	}
+	if err := backend.WaitForProcessExit(relaunchArgs.WaitParentPID, 15*time.Second); err != nil {
+		println("Error:", err.Error())
+		return
+	}
+
 	// Create an instance of the app structure
 	app := NewApp()
 	app.startTray()
 
 	// Create application with options
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:             "zju-connect-gui",
 		Width:             1024,
 		Height:            768,

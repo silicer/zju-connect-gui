@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	stdRuntime "runtime"
 	"strings"
 	"sync"
-	"time"
 
 	"zju-connect-gui/internal/backend"
 
@@ -157,12 +157,12 @@ func (a *App) Start(options LaunchOptions) error {
 			if err := a.pending.MarkResumeConnect(); err != nil {
 				return err
 			}
-			if err := backend.RelaunchSelfElevated(a.appDir, nil); err != nil {
+			extraArgs := backend.BuildElevatedRelaunchArgs(os.Getpid())
+			if err := backend.RelaunchSelfElevated(a.appDir, extraArgs); err != nil {
 				_ = a.pending.Clear()
 				return err
 			}
 			go func() {
-				time.Sleep(200 * time.Millisecond)
 				a.Quit()
 			}()
 			return nil

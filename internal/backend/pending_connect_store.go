@@ -11,6 +11,7 @@ import (
 )
 
 const pendingConnectFileName = "gui_pending_connect.json"
+const pendingConnectMaxAge = 5 * time.Minute
 
 type PendingConnectStore struct {
 	path string
@@ -60,6 +61,12 @@ func (s *PendingConnectStore) HasResumeConnect() (bool, error) {
 	var state pendingConnectState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return false, fmt.Errorf("failed to parse pending connect state: %w", err)
+	}
+	if !state.CreatedAt.IsZero() && time.Since(state.CreatedAt) > pendingConnectMaxAge {
+		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("failed to clear stale pending connect state: %w", err)
+		}
+		return false, nil
 	}
 
 	return state.ResumeConnect, nil
