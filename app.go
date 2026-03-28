@@ -247,3 +247,18 @@ func (a *App) ResumePendingConnect() (bool, error) {
 
 	return true, nil
 }
+
+func (a *App) PickEIPBrowserProgram() (string, error) {
+	if a.ctx == nil {
+		return "", errors.New("context not initialized")
+	}
+
+	path, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "选择浏览器程序",
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return path, nil
+}

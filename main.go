@@ -23,6 +23,7 @@ func main() {
 		Title:             "zju-connect-gui",
 		Width:             1024,
 		Height:            768,
+		Frameless:         true,
 		HideWindowOnClose: true,
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId:               singleInstanceID,

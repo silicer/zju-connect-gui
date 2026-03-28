@@ -4,6 +4,17 @@
 tray behavior, elevation, and persistence, while the Vue frontend provides a thin control surface for the fixed launch
 options exposed by the GUI.
 
+## Connection behavior
+
+- Automatic reconnect is **session-scoped inside the running desktop app**, not a system daemon or background service.
+- When the `zju-connect` child process exits unexpectedly, the GUI retries automatically with **exponential backoff**.
+- A successful connection resets the backoff window after the backend confirms the mode-specific readiness gate.
+- Clicking **Stop** cancels any pending retry and suppresses further reconnect attempts until the user starts again.
+- If the connection is interrupted while waiting for manual input such as SMS, callback URL, or captcha, the current
+  session stops and the user must start a new connection manually.
+- Because closing the window hides the app to the tray by default, reconnect attempts may continue while the app remains
+  running in the tray.
+
 ## Branching and release flow
 
 The repository now follows a three-layer branch model:
@@ -46,6 +57,8 @@ wails dev
 Build the frontend bundle:
 
 ```bash
+mkdir -p frontend/dist && touch frontend/dist/.gitkeep
+wails generate module
 cd frontend && npm run build
 ```
 
