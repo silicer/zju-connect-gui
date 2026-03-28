@@ -25,7 +25,8 @@
 |------|----------|-------|
 | Wails startup or window lifecycle | `main.go`, `app.go` | `HideWindowOnClose`, single-instance lock, startup/shutdown hooks |
 | Tray UX | `tray.go`, `tray_icon_*.go` | Menu actions only; current systray version has no icon double-click callback |
-| Start/stop, logs, prompts, captcha | `internal/backend/proxy_manager.go` | Backend hotspot; emits `log`, `state`, `need-input`, `need-captcha`, `error` |
+| Start/stop entrypoints and shared backend state | `internal/backend/proxy_manager.go` | `ProxyManager` type, public API, shared runtime helpers |
+| Retry/lifecycle, log parsing, readiness, polling, elevated flow | `internal/backend/proxy_manager_*.go` | Backend hotspot now split by responsibility; still emits `log`, `state`, `need-input`, `need-captcha`, `error` |
 | Fixed CLI args or launch validation | `internal/backend/launch_options.go` | Source of truth for arg building |
 | Persisted GUI settings | `internal/backend/user_settings_store.go` | Enforces fixed defaults when loading and saving |
 | Elevated TUN resume | `app.go`, `internal/backend/pending_connect_store.go`, `internal/backend/self_elevation_windows.go` | Whole-app elevation, not child-only elevation |
@@ -41,8 +42,8 @@
 | `(*App).Start()` | `app.go` | Saves settings, handles Windows TUN self-elevation, starts proxy |
 | `(*App).ResumePendingConnect()` | `app.go` | Restarts saved connection after elevated relaunch |
 | `(*App).ShowWindow()` | `app.go` | Restore/focus path used by tray and second-instance callback |
-| `(*ProxyManager).Start()` / `Stop()` | `internal/backend/proxy_manager.go` | CLI lifecycle and graceful shutdown |
-| `(*ProxyManager).handleLogLine()` | `internal/backend/proxy_manager.go` | Prompt detection, startup detection, EIP auto-open hook |
+| `(*ProxyManager).Start()` / `Stop()` | `internal/backend/proxy_manager.go` | Public lifecycle entrypoints |
+| `(*ProxyManager).handleLogLine()` | `internal/backend/proxy_manager_logs.go` | Prompt detection, startup detection, EIP readiness trigger |
 
 ## CONVENTIONS
 - The GUI wraps a compiled CLI; do not introduce assumptions that require editing upstream `zju-connect`.
@@ -62,6 +63,8 @@
 ## UNIQUE STYLES
 - Frontend logic is intentionally centralized in one SFC instead of a component tree.
 - Backend platform differences use `*_windows.go` / `*_other.go` file splits instead of large runtime branches.
+- Backend orchestration stays in one package, but the old monolithic `proxy_manager.go` has been split into `proxy_manager_*.go`
+  files for lifecycle, logs, readiness, polling, and elevated-process handling.
 - Logs are a first-class control signal: startup, prompts, captcha flow, and some UX state changes are inferred from emitted log text.
 
 ## COMMANDS
@@ -76,6 +79,6 @@ wails build -platform windows/amd64 -skipbindings
 ```
 
 ## NOTES
-- Repository size is small (~52 files) but two files dominate complexity: `internal/backend/proxy_manager.go` and `frontend/src/App.vue`.
+- Repository size is still small, but backend complexity now clusters around the `internal/backend/proxy_manager_*.go` group and `frontend/src/App.vue`.
 - There are currently no frontend tests; verification usually means backend tests + frontend build + Windows package build.
 - `frontend/dist/` is build output and may exist in the repo locally, but it is not a source directory.
