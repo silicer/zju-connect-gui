@@ -15,6 +15,18 @@ options exposed by the GUI.
 - Because closing the window hides the app to the tray by default, reconnect attempts may continue while the app remains
   running in the tray.
 
+## Backend structure
+
+- `internal/backend/` stays as a single package; the recent cleanup focused on splitting the old `proxy_manager.go`
+  hotspot into smaller files with clearer responsibilities rather than introducing new subpackages.
+- `proxy_manager.go` now keeps the `ProxyManager` type, public entrypoints, and shared runtime helpers.
+- `proxy_manager_lifecycle.go`, `proxy_manager_logs.go`, `proxy_manager_readiness.go`,
+  `proxy_manager_polling.go`, and `proxy_manager_elevated.go` split lifecycle/retry flow, log-driven prompt handling,
+  readiness gates, bounded file polling, and Windows elevated-process helpers.
+- Captcha detection and elevated PID/stop confirmation still use bounded polling with explicit timeouts. The project does
+  **not** currently use `fsnotify` here because file watchers would still need debouncing, parent-directory watching,
+  and cross-platform edge-case handling.
+
 ## Branching and release flow
 
 The repository now follows a three-layer branch model:
@@ -67,6 +79,9 @@ Run backend tests:
 ```bash
 go test ./internal/backend
 ```
+
+If you only need to validate backend refactors, prefer `go test ./internal/backend` first. Repository-wide Go test runs
+can pull in tray dependencies from the desktop entrypoint that are not always present in minimal Linux environments.
 
 Build the Windows desktop package:
 
