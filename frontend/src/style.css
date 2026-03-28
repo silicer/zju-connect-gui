@@ -242,17 +242,23 @@ textarea {
         position: absolute;
         display: block;
         box-sizing: border-box;
+        top: 50%;
+        left: 50%;
+        transform-origin: center;
     }
 
     .window-control__glyph--minimise::before {
-        inset: auto 0 var(--space-1);
+        width: calc(var(--window-control-icon-size) - var(--space-1));
         border-top: var(--icon-stroke) solid currentColor;
+        transform: translate(-50%, -5%);
     }
 
     .window-control__glyph--maximise::before {
-        inset: var(--space-1) 0 0;
+        width: calc(var(--window-control-icon-size) - var(--space-1));
+        height: calc(var(--window-control-icon-size) - var(--space-1));
         border: var(--icon-stroke) solid currentColor;
         border-radius: calc(var(--radius-s) / 3);
+        transform: translate(-50%, -50%);
     }
 
     .window-control__glyph--restore::before,
@@ -264,24 +270,19 @@ textarea {
     }
 
     .window-control__glyph--restore::before {
-        top: var(--space-1);
-        left: 0;
         background: var(--surface-primary);
+        transform: translate(-62%, -38%);
     }
 
     .window-control__glyph--restore::after {
-        top: 0;
-        right: 0;
         background: transparent;
+        transform: translate(-38%, -62%);
     }
 
     .window-control__glyph--close::before,
     .window-control__glyph--close::after {
-        top: 50%;
-        left: 50%;
         width: calc(var(--window-control-icon-size) - var(--space-1));
         border-top: var(--icon-stroke) solid currentColor;
-        transform-origin: center;
     }
 
     .window-control__glyph--close::before {

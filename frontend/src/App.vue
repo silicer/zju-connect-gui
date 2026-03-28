@@ -741,7 +741,7 @@ onUnmounted(() => {
     </div>
 
     <button
-      v-if="activeTab === 'config' && !running"
+      v-if="!running"
       type="button"
       class="app-button app-button--primary settings-fab"
       aria-label="开始连接"
@@ -750,7 +750,7 @@ onUnmounted(() => {
       <span class="settings-fab__icon settings-fab__icon--start" aria-hidden="true"></span>
     </button>
     <button
-      v-else-if="activeTab === 'config'"
+      v-else
       type="button"
       class="app-button app-button--danger settings-fab"
       aria-label="断开连接"
