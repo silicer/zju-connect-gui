@@ -488,7 +488,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell">
-    <div class="app-frame">
+    <div class="app-titlebar-shell">
       <div class="panel-surface app-titlebar" @dblclick="handleWindowToggleMaximise">
         <div class="app-titlebar__brand">
           <span class="app-titlebar__mark" aria-hidden="true"></span>
@@ -525,6 +525,9 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+    </div>
+
+    <div class="app-frame">
 
       <header class="panel-surface app-header">
         <div class="app-header__bar">
@@ -704,25 +707,6 @@ onUnmounted(() => {
                 </label>
               </div>
             </details>
-
-            <button
-              v-if="!running"
-              type="button"
-              class="app-button app-button--primary settings-fab"
-              aria-label="开始连接"
-              @click="handleStart"
-            >
-              <span class="settings-fab__icon settings-fab__icon--start" aria-hidden="true"></span>
-            </button>
-            <button
-              v-else
-              type="button"
-              class="app-button app-button--danger settings-fab"
-              aria-label="断开连接"
-              @click="handleStop"
-            >
-              <span class="settings-fab__icon settings-fab__icon--stop" aria-hidden="true"></span>
-            </button>
           </div>
         </section>
 
@@ -755,6 +739,25 @@ onUnmounted(() => {
         </section>
       </main>
     </div>
+
+    <button
+      v-if="activeTab === 'config' && !running"
+      type="button"
+      class="app-button app-button--primary settings-fab"
+      aria-label="开始连接"
+      @click="handleStart"
+    >
+      <span class="settings-fab__icon settings-fab__icon--start" aria-hidden="true"></span>
+    </button>
+    <button
+      v-else-if="activeTab === 'config'"
+      type="button"
+      class="app-button app-button--danger settings-fab"
+      aria-label="断开连接"
+      @click="handleStop"
+    >
+      <span class="settings-fab__icon settings-fab__icon--stop" aria-hidden="true"></span>
+    </button>
 
     <div
       v-if="modalOpen"

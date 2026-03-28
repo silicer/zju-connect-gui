@@ -125,6 +125,15 @@ textarea {
         color: var(--ink-strong);
     }
 
+    .app-titlebar-shell {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        width: min(100%, calc(var(--page-width) + (var(--space-7) * 2)));
+        margin: 0 auto;
+        padding: 0 var(--space-6);
+    }
+
     .app-frame {
         width: min(100%, calc(var(--page-width) + (var(--space-7) * 2)));
         margin: 0 auto;
@@ -136,7 +145,7 @@ textarea {
         align-items: center;
         justify-content: space-between;
         gap: var(--space-4);
-        margin-bottom: var(--space-4);
+        width: 100%;
         padding: var(--space-3) var(--space-4);
         user-select: none;
         --wails-draggable: drag;
@@ -412,18 +421,17 @@ textarea {
         display: grid;
         gap: var(--space-5);
         padding: var(--space-6);
-        padding-bottom: calc(var(--space-8) + var(--space-8));
     }
 
     .settings-fab {
-        position: absolute;
-        right: var(--space-5);
-        bottom: var(--space-5);
+        position: fixed;
+        right: var(--space-6);
+        bottom: var(--space-6);
         width: var(--floating-action-size);
         height: var(--floating-action-size);
         min-width: 0;
         padding: 0;
-        z-index: 1;
+        z-index: 10;
     }
 
     .settings-fab__icon {
@@ -967,8 +975,14 @@ textarea {
 }
 
 @media (max-width: 720px) {
+    .app-titlebar-shell,
     .app-frame {
         padding: var(--space-5) var(--space-4) var(--space-6);
+    }
+
+    .app-titlebar-shell {
+        padding-top: 0;
+        padding-bottom: 0;
     }
 
     .app-titlebar {
@@ -979,10 +993,6 @@ textarea {
     .settings-card,
     .modal-card {
         padding: var(--space-5);
-    }
-
-    .settings-card {
-        padding-bottom: calc(var(--space-8) + var(--space-7));
     }
 
     .settings-fab {
