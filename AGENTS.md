@@ -5,45 +5,44 @@
 **Branch:** master
 
 ## OVERVIEW
-`zju-connect-gui` is a Wails desktop wrapper around the `zju-connect` CLI binary. The Go side owns process lifecycle, tray behavior, elevation, and persistence; the Vue side is a thin control surface that reacts to Wails events and exposes only a subset of launch options.
+`zju-connect-gui` is an IUP-Go native desktop wrapper around the `zju-connect` CLI binary. The Go side owns process lifecycle, tray behavior, elevation, persistence, and the native UI event bridge. The old Vue/Wails frontend remains only as migration reference material and is no longer part of the runtime path.
 
 ## STRUCTURE
 ```text
 ./
-├── main.go                  # Wails bootstrap, tray start, single-instance lock
-├── app.go                   # Bound app API, window actions, start/stop, resume flow
+├── main.go                  # IUP bootstrap, tray start, elevated relaunch wait
+├── app.go                   # App API, window actions, start/stop, resume flow
+├── ui_iup.go                # Native IUP UI: config/log tabs, prompts, captcha canvas
 ├── tray.go                  # Systray menu and quit/restore actions
 ├── tray_icon_*.go           # Platform-specific tray icon bytes
 ├── internal/backend/        # CLI orchestration, persistence, OS split helpers, tests
-├── frontend/                # Vue UI, Vite config, generated Wails bindings
-├── build/                   # Wails build output; generated
-└── wails.json               # Wails project config
+└── frontend/                # Legacy Vue/Wails UI kept only as migration reference
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Wails startup or window lifecycle | `main.go`, `app.go` | `HideWindowOnClose`, single-instance lock, startup/shutdown hooks |
+| Native startup or window lifecycle | `main.go`, `app.go`, `ui_iup.go` | IUP init, hide-to-tray close behavior, startup/shutdown hooks |
 | Tray UX | `tray.go`, `tray_icon_*.go` | Menu actions only; current systray version has no icon double-click callback |
 | Start/stop entrypoints and shared backend state | `internal/backend/proxy_manager.go` | `ProxyManager` type, public API, shared runtime helpers |
 | Retry/lifecycle, log parsing, readiness, polling, elevated flow | `internal/backend/proxy_manager_*.go` | Backend hotspot now split by responsibility; still emits `log`, `state`, `need-input`, `need-captcha`, `error` |
 | Fixed CLI args or launch validation | `internal/backend/launch_options.go` | Source of truth for arg building |
 | Persisted GUI settings | `internal/backend/user_settings_store.go` | Enforces fixed defaults when loading and saving |
 | Elevated TUN resume | `app.go`, `internal/backend/pending_connect_store.go`, `internal/backend/self_elevation_windows.go` | Whole-app elevation, not child-only elevation |
-| Frontend behavior | `frontend/src/App.vue` | Main UI state, Wails bindings, status/log/prompt handling |
-| Frontend styling | `frontend/src/style.css` | Light theme and `#F2F2F2` background |
-| Generated bindings | `frontend/wailsjs/` | Do not edit by hand |
+| Native UI behavior | `ui_iup.go` | Main UI state, queued events, autosave, dialogs, captcha point selection |
+| Legacy web UI reference | `frontend/src/App.vue` | Historical behavior reference only; not built or shipped |
 
 ## CODE MAP
 | Symbol | Location | Role |
 |--------|----------|------|
-| `main()` | `main.go` | Starts tray before `wails.Run`, embeds frontend assets |
+| `main()` | `main.go` | Opens IUP, waits for elevated relaunch cleanup, builds native UI |
 | `(*App).startup()` | `app.go` | Resolves app dir, constructs backend stores/managers |
 | `(*App).Start()` | `app.go` | Saves settings, handles Windows TUN self-elevation, starts proxy |
 | `(*App).ResumePendingConnect()` | `app.go` | Restarts saved connection after elevated relaunch |
 | `(*App).ShowWindow()` | `app.go` | Restore/focus path used by tray and second-instance callback |
 | `(*ProxyManager).Start()` / `Stop()` | `internal/backend/proxy_manager.go` | Public lifecycle entrypoints |
 | `(*ProxyManager).handleLogLine()` | `internal/backend/proxy_manager_logs.go` | Prompt detection, startup detection, EIP readiness trigger |
+| `(*iupUI).handleEvent()` | `ui_iup.go` | Routes backend events to the native widgets safely on the UI thread |
 
 ## CONVENTIONS
 - The GUI wraps a compiled CLI; do not introduce assumptions that require editing upstream `zju-connect`.
@@ -52,9 +51,10 @@
 - Windows TUN flow is whole-app elevation with pending resume. Do not reintroduce child-only elevation wrappers.
 - Close means hide-to-tray unless `Quit()` explicitly enables shutdown.
 - The frontend treats `VPN client started` as the success signal.
+- IUP is not thread-safe. Marshal backend-driven UI changes through the queued/timer-driven bridge in `ui_iup.go` instead of touching widgets directly from worker goroutines.
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- Do not edit `frontend/wailsjs/**` or `build/**`; both are generated.
+- Do not reintroduce Wails/WebView-specific runtime assumptions or build steps.
 - Do not force-stop with ad hoc kill logic when the existing graceful stop path is available.
 - Do not add tray behavior that depends on tray icon click/double-click support without replacing the current systray layer.
 - Do not add dark mode or theme switching unless the user explicitly changes the visual constraint.
@@ -66,19 +66,20 @@
 - Backend orchestration stays in one package, but the old monolithic `proxy_manager.go` has been split into `proxy_manager_*.go`
   files for lifecycle, logs, readiness, polling, and elevated-process handling.
 - Logs are a first-class control signal: startup, prompts, captcha flow, and some UX state changes are inferred from emitted log text.
+- The new native UI intentionally keeps most desktop behavior in a single Go file (`ui_iup.go`) instead of introducing a large widget tree abstraction.
 
 ## COMMANDS
 ```bash
-wails dev
+go run .
 
-cd frontend && npm run build
+go build .
 
 go test ./internal/backend
 
-wails build -platform windows/amd64 -skipbindings
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
 ```
 
 ## NOTES
-- Repository size is still small, but backend complexity now clusters around the `internal/backend/proxy_manager_*.go` group and `frontend/src/App.vue`.
-- There are currently no frontend tests; verification usually means backend tests + frontend build + Windows package build.
-- `frontend/dist/` is build output and may exist in the repo locally, but it is not a source directory.
+- Repository size is still small, but backend complexity now clusters around the `internal/backend/proxy_manager_*.go` group and `ui_iup.go`.
+- There are currently no UI tests; verification usually means backend tests + native Go build + packaged desktop builds on CI.
+- `frontend/` is now legacy reference material, not a source directory used by the running desktop app.
