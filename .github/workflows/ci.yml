@@ -15,9 +15,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  WAILS_VERSION: v2.11.0
-
 jobs:
   backend-test:
     name: backend-test
@@ -35,8 +32,8 @@ jobs:
       - name: Run backend tests
         run: go test ./internal/backend
 
-  frontend-build:
-    name: frontend-build
+  native-build:
+    name: native-build
     runs-on: ubuntu-latest
 
     steps:
@@ -49,29 +46,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Install Wails CLI
-        shell: bash
+      - name: Install Linux native UI dependencies
         run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Ensure frontend dist placeholder exists
-        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
-
-      - name: Generate Wails bindings
-        run: wails generate module
-
-      - name: Install frontend dependencies
-        run: npm ci
-        working-directory: frontend
-
-      - name: Build frontend
-        run: npm run build
-        working-directory: frontend
+      - name: Build native desktop app
+        run: go build .

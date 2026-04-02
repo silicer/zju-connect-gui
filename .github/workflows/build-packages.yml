@@ -16,9 +16,6 @@ permissions:
 env:
   APP_NAME: zju-connect-gui
   GO_VERSION: '1.25.6'
-  NODE_VERSION: '20'
-  NODE_OPTIONS: --max-old-space-size=4096
-  WAILS_VERSION: v2.11.0
   ZJU_CONNECT_REF: 5c0ac04ade80f90a67038aec240d470f122782e5
   WINTUN_URL: https://www.wintun.net/builds/wintun-0.14.1.zip
 
@@ -37,35 +34,16 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Run backend tests
         run: go test ./internal/backend
 
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install Wails CLI
-        shell: bash
+      - name: Install Linux native UI dependencies
         run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev
 
-      - name: Ensure frontend dist placeholder exists
-        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
-
-      - name: Generate Wails bindings
-        run: wails generate module
-
-      - name: Build frontend assets
-        working-directory: frontend
-        run: npm run build
+      - name: Build native desktop app
+        run: go build .
 
   package:
     name: Package ${{ matrix.target_os }}/${{ matrix.goarch }}
@@ -140,13 +118,6 @@ jobs:
             go.sum
             _deps/zju-connect/go.sum
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -156,13 +127,7 @@ jobs:
         if: matrix.target_os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev xvfb x11-xserver-utils
-
-      - name: Install Wails CLI
-        shell: bash
-        run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Build upstream zju-connect
         shell: bash
@@ -187,25 +152,33 @@ jobs:
           }
           Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
 
-      - name: Build Wails app (Linux)
-        if: matrix.target_os == 'linux'
+      - name: Build native app (Windows)
+        if: matrix.target_os == 'windows'
         shell: bash
-        run: xvfb-run --auto-servernum wails build -clean -platform "$GOOS/$GOARCH" -tags webkit2_41
+        run: |
+          mkdir -p "$RUNNER_TEMP/app-build"
+          GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=1 go build -trimpath -ldflags='-H=windowsgui' -o "$RUNNER_TEMP/app-build/${APP_NAME}.exe" .
 
-      - name: Build Wails app (non-Linux)
-        if: matrix.target_os != 'linux'
+      - name: Build native app (non-Windows)
+        if: matrix.target_os != 'windows'
         shell: bash
-        run: wails build -clean -platform "$GOOS/$GOARCH"
+        run: |
+          mkdir -p "$RUNNER_TEMP/app-build"
+          GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=1 go build -trimpath -o "$RUNNER_TEMP/app-build/$APP_NAME" .
 
       - name: Stage package contents
         shell: bash
         run: |
+          app_binary="$RUNNER_TEMP/app-build/$APP_NAME"
+          if [[ "$TARGET_OS" == "windows" ]]; then
+            app_binary="$RUNNER_TEMP/app-build/${APP_NAME}.exe"
+          fi
           args=(
-            --workspace "$GITHUB_WORKSPACE"
             --target-os "$TARGET_OS"
             --arch "$GOARCH"
             --artifact-name "$ARTIFACT_NAME"
             --staging-root "$RUNNER_TEMP/stage"
+            --app-binary "$app_binary"
           )
           if [[ "$TARGET_OS" == "windows" ]]; then
             args+=(
@@ -230,7 +203,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/stage/$ARTIFACT_NAME/$APP_NAME.app" "$ARCHIVE_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/stage/$ARTIFACT_NAME" "$ARCHIVE_PATH"
           test -f "$ARCHIVE_PATH"
 
       - name: Create Windows archive
