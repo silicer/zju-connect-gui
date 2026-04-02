@@ -1,21 +1,15 @@
 package main
 
 import (
-	"embed"
 	"os"
 	"time"
 
 	"zju-connect-gui/internal/backend"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/gen2brain/iup-go/iup"
 )
 
 const singleInstanceID = "ab3d7e1f-f25e-44ee-9c66-d3f71f33c4d3"
-
-//go:embed all:frontend/dist
-var assets embed.FS
 
 func main() {
 	relaunchArgs, err := backend.ParseElevatedRelaunchArgs(os.Args[1:])
@@ -28,34 +22,24 @@ func main() {
 		return
 	}
 
-	// Create an instance of the app structure
-	app := NewApp()
-	app.startTray()
+	iup.Open()
+	defer iup.Close()
+	iup.SetGlobal("UTF8MODE", "YES")
 
-	// Create application with options
-	err = wails.Run(&options.App{
-		Title:             "zju-connect-gui",
-		Width:             1024,
-		Height:            768,
-		Frameless:         true,
-		HideWindowOnClose: true,
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               singleInstanceID,
-			OnSecondInstanceLaunch: app.onSecondInstanceLaunch,
-		},
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		BackgroundColour: &options.RGBA{R: 242, G: 242, B: 242, A: 1},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		OnBeforeClose:    app.onBeforeClose,
-		Bind: []interface{}{
-			app,
-		},
-	})
+	app := NewApp(nil)
+	if err := app.startup(); err != nil {
+		println("Error:", err.Error())
+		return
+	}
 
+	ui, err := NewIUPUI(app)
 	if err != nil {
+		println("Error:", err.Error())
+		return
+	}
+	app.SetUI(ui)
+	app.startTray()
+	if err := ui.Run(); err != nil {
 		println("Error:", err.Error())
 	}
 }
