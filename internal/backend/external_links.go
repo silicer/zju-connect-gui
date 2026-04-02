@@ -1,24 +1,26 @@
 package backend
 
 import (
-	"context"
-	"errors"
 	"os/exec"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"runtime"
 )
 
 const EIPURL = "http://eip.scmcc.com.cn/"
 
-func OpenEIP(ctx context.Context, options LaunchOptions) error {
+func OpenEIP(options LaunchOptions) error {
 	options = normalizeLaunchOptions(options)
 
 	if options.EIPBrowserProgram == "" {
-		if ctx == nil {
-			return errors.New("runtime context is not initialized")
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", EIPURL)
+		case "darwin":
+			cmd = exec.Command("open", EIPURL)
+		default:
+			cmd = exec.Command("xdg-open", EIPURL)
 		}
-		wailsRuntime.BrowserOpenURL(ctx, EIPURL)
-		return nil
+		return cmd.Start()
 	}
 
 	args := append([]string{}, options.EIPBrowserArgs...)

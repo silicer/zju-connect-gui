@@ -63,7 +63,6 @@ func (p *ProxyManager) openEIPURLOnce() {
 		p.mu.Unlock()
 		return
 	}
-	ctx := p.ctx
 	options := p.eipOptions
 	openEIP := p.openEIP
 	p.eipOpened = true
@@ -73,7 +72,7 @@ func (p *ProxyManager) openEIPURLOnce() {
 	}
 
 	go func() {
-		if err := openEIP(ctx, options); err != nil {
+		if err := openEIP(options); err != nil {
 			p.mu.Lock()
 			p.eipOpened = false
 			p.mu.Unlock()

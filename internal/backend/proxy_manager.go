@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type retryTimer interface {
@@ -22,7 +20,7 @@ type retryTimer interface {
 
 type ProxyManager struct {
 	appDir string
-	ctx    context.Context
+	ui     UIBridge
 
 	mu               sync.Mutex
 	cmd              *exec.Cmd
@@ -49,7 +47,7 @@ type ProxyManager struct {
 	retryJitter      func(time.Duration, int) time.Duration
 	startProcess     func(string, LaunchOptions) error
 	waitForHTTPReady func(string, uint64)
-	openEIP          func(context.Context, LaunchOptions) error
+	openEIP          func(LaunchOptions) error
 }
 
 func NewProxyManager(appDir string) *ProxyManager {
@@ -64,8 +62,8 @@ func NewProxyManager(appDir string) *ProxyManager {
 	}
 }
 
-func (p *ProxyManager) SetContext(ctx context.Context) {
-	p.ctx = ctx
+func (p *ProxyManager) SetUI(ui UIBridge) {
+	p.ui = ui
 }
 
 func (p *ProxyManager) IsRunning() bool {
@@ -252,20 +250,17 @@ func (p *ProxyManager) emitStateWithDetails(state string, message string, retryA
 }
 
 func (p *ProxyManager) emit(event string, payload any) {
-	if p.ctx == nil {
+	if p.ui == nil {
 		return
 	}
-	wailsRuntime.EventsEmit(p.ctx, event, payload)
+	p.ui.EmitEvent(event, payload)
 }
 
 func (p *ProxyManager) showWindow() {
-	if p.ctx == nil {
+	if p.ui == nil {
 		return
 	}
-	wailsRuntime.WindowShow(p.ctx)
-	wailsRuntime.WindowUnminimise(p.ctx)
-	wailsRuntime.WindowSetAlwaysOnTop(p.ctx, true)
-	wailsRuntime.WindowSetAlwaysOnTop(p.ctx, false)
+	p.ui.ShowWindow()
 }
 
 func (p *ProxyManager) binaryPath() string {
