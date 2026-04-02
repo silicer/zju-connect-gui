@@ -5,6 +5,7 @@ frontend/dist
 frontend/wailsjs/
 /dist/
 bin/
+scripts/__pycache__/
 client_data.json
 gui_pending_connect.json
 gui_settings.json
