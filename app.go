@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"log"
 	"os"
@@ -10,14 +9,11 @@ import (
 	"sync"
 
 	"zju-connect-gui/internal/backend"
-
-	"github.com/wailsapp/wails/v2/pkg/options"
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App struct
 type App struct {
-	ctx     context.Context
+	ui      DesktopUI
 	proxy   *backend.ProxyManager
 	store   *backend.UserSettingsStore
 	pending *backend.PendingConnectStore
@@ -28,23 +24,22 @@ type App struct {
 }
 
 // NewApp creates a new App application struct
-func NewApp() *App {
-	return &App{}
+func NewApp(ui DesktopUI) *App {
+	return &App{ui: ui}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
+func (a *App) SetUI(ui DesktopUI) {
+	a.ui = ui
+}
 
+func (a *App) startup() error {
 	appDir, err := backend.ResolveAppDir()
 	if err != nil {
-		log.Printf("failed to resolve app dir: %v", err)
-		return
+		return err
 	}
 
 	proxy := backend.NewProxyManager(appDir)
-	proxy.SetContext(ctx)
+	proxy.SetUI(a)
 	store := backend.NewUserSettingsStore(appDir)
 	pending := backend.NewPendingConnectStore(appDir)
 
@@ -52,24 +47,17 @@ func (a *App) startup(ctx context.Context) {
 	a.store = store
 	a.pending = pending
 	a.appDir = appDir
+	return nil
 }
 
-// Greet returns a greeting for the given name
-func (a *App) onBeforeClose(_ context.Context) bool {
-	a.closeMu.Lock()
-	allow := a.allowClose
-	a.closeMu.Unlock()
-	if allow {
-		return false
+func (a *App) EmitEvent(event string, payload any) {
+	if a.ui == nil {
+		return
 	}
-
-	if a.ctx != nil {
-		wailsRuntime.WindowHide(a.ctx)
-	}
-	return true
+	a.ui.EmitEvent(event, payload)
 }
 
-func (a *App) shutdown(_ context.Context) {
+func (a *App) shutdown() {
 	if a.proxy != nil {
 		_ = a.proxy.Stop()
 	}
@@ -77,13 +65,10 @@ func (a *App) shutdown(_ context.Context) {
 }
 
 func (a *App) ShowWindow() {
-	if a.ctx == nil {
+	if a.ui == nil {
 		return
 	}
-	wailsRuntime.WindowShow(a.ctx)
-	wailsRuntime.WindowUnminimise(a.ctx)
-	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, true)
-	wailsRuntime.WindowSetAlwaysOnTop(a.ctx, false)
+	a.ui.ShowWindow()
 }
 
 func (a *App) OpenEIP() {
@@ -97,27 +82,27 @@ func (a *App) OpenEIP() {
 		}
 	}
 
-	if err := backend.OpenEIP(a.ctx, options); err != nil {
+	if err := backend.OpenEIP(options); err != nil {
 		log.Printf("failed to open EIP URL: %v", err)
 	}
 }
 
-func (a *App) onSecondInstanceLaunch(secondInstanceData options.SecondInstanceData) {
+func (a *App) onSecondInstanceLaunch(args []string) {
 	a.ShowWindow()
-	if a.ctx == nil {
+	if a.ui == nil {
 		return
 	}
-	if len(secondInstanceData.Args) == 0 {
+	if len(args) == 0 {
 		return
 	}
-	go wailsRuntime.EventsEmit(a.ctx, "log", "Second instance launch intercepted with args: "+strings.Join(secondInstanceData.Args, " "))
+	go a.EmitEvent("log", "Second instance launch intercepted with args: "+strings.Join(args, " "))
 }
 
 func (a *App) HideWindow() {
-	if a.ctx == nil {
+	if a.ui == nil {
 		return
 	}
-	wailsRuntime.WindowHide(a.ctx)
+	a.ui.HideWindow()
 }
 
 func (a *App) Quit() {
@@ -129,8 +114,8 @@ func (a *App) Quit() {
 		_ = a.proxy.Stop()
 	}
 	quitTray()
-	if a.ctx != nil {
-		wailsRuntime.Quit(a.ctx)
+	if a.ui != nil {
+		a.ui.Quit()
 	}
 }
 
@@ -249,13 +234,11 @@ func (a *App) ResumePendingConnect() (bool, error) {
 }
 
 func (a *App) PickEIPBrowserProgram() (string, error) {
-	if a.ctx == nil {
-		return "", errors.New("context not initialized")
+	if a.ui == nil {
+		return "", errors.New("desktop UI not initialized")
 	}
 
-	path, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "选择浏览器程序",
-	})
+	path, err := a.ui.OpenFileDialog("选择浏览器程序")
 	if err != nil {
 		return "", err
 	}

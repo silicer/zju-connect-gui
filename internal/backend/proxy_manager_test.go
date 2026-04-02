@@ -184,7 +184,7 @@ func TestSuccessfulStartResetsBackoff(t *testing.T) {
 		p.markReadyForGeneration(generation)
 		ready <- struct{}{}
 	}
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		return nil
 	}
 
@@ -328,7 +328,7 @@ func TestReadStreamFlushesFinalSuccessLine(t *testing.T) {
 		p.markReadyForGeneration(generation)
 		ready <- struct{}{}
 	}
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		return nil
 	}
 
@@ -387,7 +387,7 @@ func TestNonTunStartWaitsForHTTPBindBeforeConnected(t *testing.T) {
 	}
 	p.mu.Unlock()
 
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		return nil
 	}
 	p.markReadyForGeneration(generation)
@@ -451,7 +451,7 @@ func TestTunStartWaitsForAddRouteLogBeforeConnected(t *testing.T) {
 	p.mu.Unlock()
 
 	ready := make(chan struct{}, 1)
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		ready <- struct{}{}
 		return nil
 	}
@@ -481,7 +481,7 @@ func TestRouteLogDoesNotConnectInNonTunMode(t *testing.T) {
 	p.mu.Lock()
 	p.retryAttempt = 2
 	p.mu.Unlock()
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		t.Fatal("did not expect EIP open in non-TUN route log test")
 		return nil
 	}
@@ -508,7 +508,7 @@ func TestStaleHTTPReadyResultIgnoredAfterStop(t *testing.T) {
 	p.waitForHTTPReady = func(_ string, generation uint64) {
 		called <- generation
 	}
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		t.Fatal("did not expect stale readiness result to open EIP")
 		return nil
 	}
@@ -543,7 +543,7 @@ func TestMarkReadyOpensEIPOnlyOnce(t *testing.T) {
 	var mu sync.Mutex
 	openCalls := 0
 	opened := make(chan struct{}, 1)
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		mu.Lock()
 		openCalls++
 		mu.Unlock()
@@ -584,7 +584,7 @@ func TestReadStreamFlushesFinalRouteLine(t *testing.T) {
 		p.markReadyForGeneration(generation)
 		readyWait <- struct{}{}
 	}
-	p.openEIP = func(context.Context, LaunchOptions) error {
+	p.openEIP = func(LaunchOptions) error {
 		return nil
 	}
 
