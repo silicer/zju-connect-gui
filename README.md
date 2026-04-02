@@ -1,8 +1,8 @@
 # zju-connect-gui
 
-`zju-connect-gui` is a Wails desktop wrapper around the `zju-connect` CLI. The Go backend manages process lifecycle,
-tray behavior, elevation, and persistence, while the Vue frontend provides a thin control surface for the fixed launch
-options exposed by the GUI.
+`zju-connect-gui` is an IUP-Go native desktop wrapper around the `zju-connect` CLI. The Go backend manages process
+lifecycle, tray behavior, elevation, and persistence, while the native Go UI provides the control surface for the fixed
+launch options exposed by the GUI.
 
 ## Connection behavior
 
@@ -47,7 +47,7 @@ The repository CI is split across two workflows:
 
 Recommended required checks for branch protection should follow the target branch:
 
-- `dev` pull requests: `backend-test`, `frontend-build`
+- `dev` pull requests: `backend-test`, `native-build`
 - `dev` branch pushes: packaged artifacts from `.github/workflows/build-packages.yml` for integrated product testing
 - `master` pull requests: `Verify repository`
 - `master` branch pushes: packaged artifacts from `.github/workflows/build-packages.yml` for release preparation from the merged commit
@@ -60,18 +60,16 @@ workflow.
 
 ## Local development
 
-Run the app in live development mode:
+Run the app locally:
 
 ```bash
-wails dev
+go run .
 ```
 
-Build the frontend bundle:
+Build the desktop application:
 
 ```bash
-mkdir -p frontend/dist && touch frontend/dist/.gitkeep
-wails generate module
-cd frontend && npm run build
+go build .
 ```
 
 Run backend tests:
@@ -86,5 +84,5 @@ can pull in tray dependencies from the desktop entrypoint that are not always pr
 Build the Windows desktop package:
 
 ```bash
-wails build -platform windows/amd64 -skipbindings
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
 ```
