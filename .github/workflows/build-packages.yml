@@ -60,12 +60,6 @@ jobs:
             runner: windows-latest
             archive_suffix: .zip
             wintun_arch: amd64
-          - target_os: windows
-            goos: windows
-            goarch: arm64
-            runner: windows-11-arm
-            archive_suffix: .zip
-            wintun_arch: arm64
           - target_os: linux
             goos: linux
             goarch: amd64
