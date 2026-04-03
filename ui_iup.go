@@ -76,6 +76,7 @@ type iupUI struct {
 	inputPromptLabel iup.Ihandle
 	inputText        iup.Ihandle
 	inputMultiline   iup.Ihandle
+	inputSubmit      iup.Ihandle
 	inputMode        inputDialogMode
 
 	captchaDialog       iup.Ihandle
@@ -174,7 +175,7 @@ func (ui *iupUI) build() {
 	ui.autoScrollToggle.SetAttribute("VALUE", "ON")
 	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=18, VISIBLECOLUMNS=80, FONT="Monospace, 10"`)
 	ui.startStopButton = iup.Button("开始连接")
-	ui.startStopButton.SetAttributes(`PADDING=18x8`)
+	ui.startStopButton.SetAttributes(`PADDING=24x12, FONTSTYLE=BOLD`)
 	ui.startStopButton.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
 		ui.handleStartStop()
 		return iup.DEFAULT
@@ -213,6 +214,12 @@ func (ui *iupUI) build() {
 		).SetAttributes(`GAP=4, EXPAND=HORIZONTAL`)
 	}
 
+	proxyOnlyHelp := iup.Label("开启后，仅提供本机 SOCKS 和 HTTP 代理端口。\n关闭后，还会启用 TUN / 系统路由接管。").SetAttributes(`EXPAND=HORIZONTAL, PADDING=18x0`)
+	proxyOnlyField := iup.Vbox(
+		ui.proxyOnlyToggle,
+		proxyOnlyHelp,
+	).SetAttributes(`GAP=2, EXPAND=HORIZONTAL`)
+
 	configFields := iup.Vbox(
 		labeledField("用户名", ui.usernameInput),
 		labeledField("密码", ui.passwordInput),
@@ -220,7 +227,7 @@ func (ui *iupUI) build() {
 		labeledField("HTTP 监听地址", ui.httpBindInput),
 		labeledField("浏览器程序路径", iup.Hbox(ui.eipProgramInput, browseButton, clearButton).SetAttributes(`GAP=6, EXPAND=HORIZONTAL`)),
 		labeledField("浏览器参数（每行一个）", ui.eipArgsInput),
-		ui.proxyOnlyToggle,
+		proxyOnlyField,
 		ui.debugDumpToggle,
 	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL`)
 
@@ -247,7 +254,7 @@ func (ui *iupUI) build() {
 		tabs,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
-	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1187x1104, MINSIZE=1187x1104`)
+	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1248x1160, MINSIZE=1248x1160`)
 	ui.dialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		if stdRuntime.GOOS == "darwin" {
 			go ui.app.Quit()
@@ -297,8 +304,8 @@ func (ui *iupUI) buildInputDialog() {
 		iup.Hide(ui.inputDialog)
 		return iup.DEFAULT
 	}))
-	submit := iup.Button("提交")
-	submit.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
+	ui.inputSubmit = iup.Button("提交")
+	ui.inputSubmit.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
 		ui.submitInputDialog()
 		return iup.DEFAULT
 	}))
@@ -306,9 +313,9 @@ func (ui *iupUI) buildInputDialog() {
 		ui.inputPromptLabel,
 		ui.inputText,
 		ui.inputMultiline,
-		iup.Hbox(iup.Fill(), cancel, submit).SetAttribute("GAP", "6"),
+		iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
-	ui.inputDialog = iup.Dialog(body).SetAttributes(`TITLE="输入需求", RASTERSIZE=420x220`)
+	ui.inputDialog = iup.Dialog(body).SetAttributes(`TITLE="输入需求", RASTERSIZE=420x250, MINSIZE=420x220`)
 	ui.inputDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.inputDialog)
 		return iup.IGNORE
@@ -527,6 +534,12 @@ func (ui *iupUI) handleInputPayload(payload any) {
 	}
 	ui.inputPromptLabel.SetAttribute("TITLE", prompt)
 	iup.Show(ui.inputDialog)
+	iup.Refresh(ui.inputDialog)
+	if ui.inputMode == inputDialogModeSMS {
+		iup.SetFocus(ui.inputText)
+	} else {
+		iup.SetFocus(ui.inputMultiline)
+	}
 }
 
 func (ui *iupUI) handleCaptchaPayload(payload any) {
