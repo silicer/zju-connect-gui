@@ -4,5 +4,5 @@ package main
 
 import _ "embed"
 
-//go:embed frontend/src/assets/images/logo-universal.png
+//go:embed assets/gemini.png
 var trayIconBytes []byte
