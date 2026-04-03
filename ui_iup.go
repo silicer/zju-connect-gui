@@ -62,6 +62,7 @@ type iupUI struct {
 	logArea          iup.Ihandle
 	autoScrollToggle iup.Ihandle
 	startStopButton  iup.Ihandle
+	appIcon          iup.Ihandle
 
 	usernameInput   iup.Ihandle
 	passwordInput   iup.Ihandle
@@ -103,7 +104,9 @@ func NewIUPUI(app *App) (*iupUI, error) {
 		app:     app,
 		actions: make(chan func(), 512),
 	}
-	ui.build()
+	if err := ui.build(); err != nil {
+		return nil, err
+	}
 	return ui, nil
 }
 
@@ -161,7 +164,14 @@ func (ui *iupUI) enqueue(fn func()) {
 	}
 }
 
-func (ui *iupUI) build() {
+func (ui *iupUI) build() error {
+	icon, err := loadApplicationIcon()
+	if err != nil {
+		return fmt.Errorf("load application icon: %w", err)
+	}
+	ui.appIcon = icon
+	iup.SetGlobal("ICON", icon)
+
 	ui.statusLabel = iup.Label("").SetAttributes(`EXPAND=HORIZONTAL, PADDING=8x6`)
 	ui.usernameInput = iup.Text().SetAttributes(`EXPAND=HORIZONTAL`)
 	ui.passwordInput = iup.Text().SetAttributes(`EXPAND=HORIZONTAL, PASSWORD=YES`)
@@ -254,6 +264,7 @@ func (ui *iupUI) build() {
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
 	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1248x1160, MINSIZE=1248x1160`)
+	iup.SetAttributeHandle(ui.dialog, "ICON", ui.appIcon)
 	ui.dialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		if stdRuntime.GOOS == "darwin" {
 			go ui.app.Quit()
@@ -285,6 +296,7 @@ func (ui *iupUI) build() {
 		return iup.DEFAULT
 	}))
 	ui.autosaveTimer.SetAttribute("RUN", "YES")
+	return nil
 }
 
 func (ui *iupUI) buildInputDialog() {
@@ -315,6 +327,9 @@ func (ui *iupUI) buildInputDialog() {
 		iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
 	ui.inputDialog = iup.Dialog(body).SetAttributes(`TITLE="输入需求", RASTERSIZE=420x250, MINSIZE=420x220`)
+	if ui.appIcon != 0 {
+		iup.SetAttributeHandle(ui.inputDialog, "ICON", ui.appIcon)
+	}
 	ui.inputDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.inputDialog)
 		return iup.IGNORE
@@ -374,6 +389,9 @@ func (ui *iupUI) buildCaptchaDialog() {
 		iup.Hbox(undo, clear, iup.Fill(), cancel, submit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
 	ui.captchaDialog = iup.Dialog(body).SetAttributes(`TITLE="图形验证码", RASTERSIZE=800x720, MINSIZE=760x680`)
+	if ui.appIcon != 0 {
+		iup.SetAttributeHandle(ui.captchaDialog, "ICON", ui.appIcon)
+	}
 	ui.captchaDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.captchaDialog)
 		return iup.IGNORE
