@@ -1,8 +1,6 @@
 .ace-tool/
 build/bin
 node_modules
-frontend/dist
-frontend/wailsjs/
 /dist/
 bin/
 scripts/__pycache__/
