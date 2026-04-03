@@ -64,6 +64,12 @@ func (a *App) shutdown() {
 	quitTray()
 }
 
+func (a *App) canClose() bool {
+	a.closeMu.Lock()
+	defer a.closeMu.Unlock()
+	return a.allowClose
+}
+
 func (a *App) ShowWindow() {
 	if a.ui == nil {
 		return

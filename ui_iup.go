@@ -109,9 +109,13 @@ func NewIUPUI(app *App) (*iupUI, error) {
 func (ui *iupUI) Run() error {
 	ui.loadInitialState()
 	ui.showMainDialog()
-	iup.MainLoop()
-	ui.app.shutdown()
-	return nil
+	for {
+		iup.MainLoop()
+		if ui.app.canClose() {
+			ui.app.shutdown()
+			return nil
+		}
+	}
 }
 
 func (ui *iupUI) ShowWindow() {
@@ -243,7 +247,7 @@ func (ui *iupUI) build() {
 		tabs,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
-	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=980x720, MINSIZE=840x620`)
+	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1040x780, MINSIZE=900x680`)
 	ui.dialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		if stdRuntime.GOOS == "darwin" {
 			go ui.app.Quit()
@@ -683,9 +687,13 @@ func (ui *iupUI) captchaPreviewRect() captchaPreviewRect {
 	if ui.captchaImageWidth <= 0 || ui.captchaImageHeight <= 0 {
 		return captchaPreviewRect{}
 	}
+	canvasWidth, canvasHeight := ui.captchaCanvasSize()
+	if canvasWidth <= 0 || canvasHeight <= 0 {
+		return captchaPreviewRect{}
+	}
 	scale := math.Min(
-		float64(captchaPreviewWidth)/float64(ui.captchaImageWidth),
-		float64(captchaPreviewHeight)/float64(ui.captchaImageHeight),
+		float64(canvasWidth)/float64(ui.captchaImageWidth),
+		float64(canvasHeight)/float64(ui.captchaImageHeight),
 	)
 	if scale <= 0 {
 		return captchaPreviewRect{}
@@ -693,11 +701,40 @@ func (ui *iupUI) captchaPreviewRect() captchaPreviewRect {
 	width := maxInt(1, int(math.Round(float64(ui.captchaImageWidth)*scale)))
 	height := maxInt(1, int(math.Round(float64(ui.captchaImageHeight)*scale)))
 	return captchaPreviewRect{
-		X:      (captchaPreviewWidth - width) / 2,
-		Y:      (captchaPreviewHeight - height) / 2,
+		X:      (canvasWidth - width) / 2,
+		Y:      (canvasHeight - height) / 2,
 		Width:  width,
 		Height: height,
 	}
+}
+
+func (ui *iupUI) captchaCanvasSize() (int, int) {
+	for _, attr := range []string{"DRAWSIZE", "RASTERSIZE"} {
+		if width, height, ok := parseIUPSize(ui.captchaCanvas.GetAttribute(attr)); ok {
+			return width, height
+		}
+	}
+	return captchaPreviewWidth, captchaPreviewHeight
+}
+
+func parseIUPSize(raw string) (int, int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, 0, false
+	}
+	separator := strings.IndexAny(raw, "xX")
+	if separator <= 0 || separator >= len(raw)-1 {
+		return 0, 0, false
+	}
+	width, err := strconv.Atoi(strings.TrimSpace(raw[:separator]))
+	if err != nil || width <= 0 {
+		return 0, 0, false
+	}
+	height, err := strconv.Atoi(strings.TrimSpace(raw[separator+1:]))
+	if err != nil || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
 }
 
 func (ui *iupUI) mapCaptchaClickToNatural(x, y int) (captchaPoint, bool) {
