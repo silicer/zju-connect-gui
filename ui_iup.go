@@ -247,7 +247,7 @@ func (ui *iupUI) build() {
 		tabs,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
-	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1040x780, MINSIZE=900x680`)
+	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1187x1104, MINSIZE=1187x1104`)
 	ui.dialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		if stdRuntime.GOOS == "darwin" {
 			go ui.app.Quit()
@@ -318,13 +318,13 @@ func (ui *iupUI) buildInputDialog() {
 func (ui *iupUI) buildCaptchaDialog() {
 	ui.captchaPromptLabel = iup.Label("请在图片上按顺序点击对应位置，然后提交").SetAttribute("EXPAND", "HORIZONTAL")
 	ui.captchaCanvas = iup.Canvas().SetAttributes(fmt.Sprintf(`RASTERSIZE=%dx%d`, captchaPreviewWidth, captchaPreviewHeight))
-	ui.captchaCanvas.SetCallback("ACTION", iup.ActionFunc(func(ih iup.Ihandle) int {
+	ui.captchaCanvas.SetCallback("ACTION", iup.CanvasActionFunc(func(ih iup.Ihandle, _, _ float64) int {
 		ui.drawCaptcha(ih)
 		return iup.DEFAULT
 	}))
 	ui.captchaCanvas.SetCallback("BUTTON_CB", iup.ButtonFunc(func(ih iup.Ihandle, button, pressed, x, y int, _ string) int {
 		if button == 1 && pressed == 1 && ui.captchaImage != nil {
-			point, ok := ui.mapCaptchaClickToNatural(x, y)
+			point, ok := ui.mapCaptchaClickToNatural(ih, x, y)
 			if !ok {
 				return iup.DEFAULT
 			}
@@ -367,7 +367,7 @@ func (ui *iupUI) buildCaptchaDialog() {
 		ui.captchaPointsLabel,
 		iup.Hbox(undo, clear, iup.Fill(), cancel, submit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
-	ui.captchaDialog = iup.Dialog(body).SetAttributes(`TITLE="图形验证码", RASTERSIZE=800x620, MINSIZE=760x580`)
+	ui.captchaDialog = iup.Dialog(body).SetAttributes(`TITLE="图形验证码", RASTERSIZE=800x720, MINSIZE=760x680`)
 	ui.captchaDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.captchaDialog)
 		return iup.IGNORE
@@ -574,12 +574,12 @@ func (ui *iupUI) registerCaptchaHandle(img image.Image) {
 func (ui *iupUI) drawCaptcha(ih iup.Ihandle) {
 	iup.DrawBegin(ih)
 	defer iup.DrawEnd(ih)
-	preview := ui.captchaPreviewRect()
+	preview := ui.captchaPreviewRect(ih)
 	if ui.captchaImage != nil && preview.Width > 0 && preview.Height > 0 {
 		iup.DrawImage(ih, captchaHandle, preview.X, preview.Y, preview.Width, preview.Height)
 	}
 	for idx, point := range ui.captchaPoints {
-		x, y, ok := ui.mapNaturalPointToPreview(point)
+		x, y, ok := ui.mapNaturalPointToPreview(ih, point)
 		if !ok {
 			continue
 		}
@@ -683,11 +683,11 @@ func (ui *iupUI) hideMainDialogToTray() {
 	iup.Hide(ui.dialog)
 }
 
-func (ui *iupUI) captchaPreviewRect() captchaPreviewRect {
+func (ui *iupUI) captchaPreviewRect(ih iup.Ihandle) captchaPreviewRect {
 	if ui.captchaImageWidth <= 0 || ui.captchaImageHeight <= 0 {
 		return captchaPreviewRect{}
 	}
-	canvasWidth, canvasHeight := ui.captchaCanvasSize()
+	canvasWidth, canvasHeight := ui.captchaCanvasSize(ih)
 	if canvasWidth <= 0 || canvasHeight <= 0 {
 		return captchaPreviewRect{}
 	}
@@ -708,37 +708,17 @@ func (ui *iupUI) captchaPreviewRect() captchaPreviewRect {
 	}
 }
 
-func (ui *iupUI) captchaCanvasSize() (int, int) {
+func (ui *iupUI) captchaCanvasSize(ih iup.Ihandle) (int, int) {
 	for _, attr := range []string{"DRAWSIZE", "RASTERSIZE"} {
-		if width, height, ok := parseIUPSize(ui.captchaCanvas.GetAttribute(attr)); ok {
+		if count, width, height := iup.GetInt2(ih, attr); count == 2 && width > 0 && height > 0 {
 			return width, height
 		}
 	}
 	return captchaPreviewWidth, captchaPreviewHeight
 }
 
-func parseIUPSize(raw string) (int, int, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, 0, false
-	}
-	separator := strings.IndexAny(raw, "xX")
-	if separator <= 0 || separator >= len(raw)-1 {
-		return 0, 0, false
-	}
-	width, err := strconv.Atoi(strings.TrimSpace(raw[:separator]))
-	if err != nil || width <= 0 {
-		return 0, 0, false
-	}
-	height, err := strconv.Atoi(strings.TrimSpace(raw[separator+1:]))
-	if err != nil || height <= 0 {
-		return 0, 0, false
-	}
-	return width, height, true
-}
-
-func (ui *iupUI) mapCaptchaClickToNatural(x, y int) (captchaPoint, bool) {
-	preview := ui.captchaPreviewRect()
+func (ui *iupUI) mapCaptchaClickToNatural(ih iup.Ihandle, x, y int) (captchaPoint, bool) {
+	preview := ui.captchaPreviewRect(ih)
 	if preview.Width <= 0 || preview.Height <= 0 {
 		return captchaPoint{}, false
 	}
@@ -753,8 +733,8 @@ func (ui *iupUI) mapCaptchaClickToNatural(x, y int) (captchaPoint, bool) {
 	}, true
 }
 
-func (ui *iupUI) mapNaturalPointToPreview(point captchaPoint) (int, int, bool) {
-	preview := ui.captchaPreviewRect()
+func (ui *iupUI) mapNaturalPointToPreview(ih iup.Ihandle, point captchaPoint) (int, int, bool) {
+	preview := ui.captchaPreviewRect(ih)
 	if preview.Width <= 0 || preview.Height <= 0 {
 		return 0, 0, false
 	}
