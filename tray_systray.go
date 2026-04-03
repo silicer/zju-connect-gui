@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/getlantern/systray"
+	"github.com/energye/systray"
 )
 
 var trayOnce sync.Once
@@ -33,19 +33,15 @@ func startTrayImpl(a *App) {
 			systray.AddSeparator()
 			quitItem := systray.AddMenuItem("退出程序", "停止连接并退出程序")
 
-			go func() {
-				for {
-					select {
-					case <-openEIPItem.ClickedCh:
-						a.OpenEIP()
-					case <-restoreItem.ClickedCh:
-						a.ShowWindow()
-					case <-quitItem.ClickedCh:
-						a.Quit()
-						return
-					}
-				}
-			}()
+			openEIPItem.Click(func() {
+				a.OpenEIP()
+			})
+			restoreItem.Click(func() {
+				a.ShowWindow()
+			})
+			quitItem.Click(func() {
+				a.Quit()
+			})
 		}, func() {
 			log.Printf("tray shutdown")
 		})
