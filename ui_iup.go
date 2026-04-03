@@ -8,6 +8,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"reflect"
 	stdRuntime "runtime"
 	"strconv"
@@ -24,11 +25,21 @@ const (
 	autosaveTimerMs = 250
 	maxLogEntries   = 1000
 	captchaHandle   = "zju_connect_gui_captcha"
+
+	captchaPreviewWidth  = 720
+	captchaPreviewHeight = 420
 )
 
 type captchaPoint struct {
 	X int
 	Y int
+}
+
+type captchaPreviewRect struct {
+	X      int
+	Y      int
+	Width  int
+	Height int
 }
 
 type inputDialogMode string
@@ -97,7 +108,7 @@ func NewIUPUI(app *App) (*iupUI, error) {
 
 func (ui *iupUI) Run() error {
 	ui.loadInitialState()
-	iup.Show(ui.dialog)
+	ui.showMainDialog()
 	iup.MainLoop()
 	ui.app.shutdown()
 	return nil
@@ -105,14 +116,13 @@ func (ui *iupUI) Run() error {
 
 func (ui *iupUI) ShowWindow() {
 	ui.enqueue(func() {
-		ui.dialog.SetAttribute("STATE", "RESTORE")
-		iup.Show(ui.dialog)
+		ui.showMainDialog()
 	})
 }
 
 func (ui *iupUI) HideWindow() {
 	ui.enqueue(func() {
-		iup.Hide(ui.dialog)
+		ui.hideMainDialogToTray()
 	})
 }
 
@@ -158,8 +168,9 @@ func (ui *iupUI) build() {
 	ui.eipArgsInput = iup.MultiLine().SetAttributes(`EXPAND=HORIZONTAL, VISIBLELINES=4`)
 	ui.autoScrollToggle = iup.Toggle("自动滚动")
 	ui.autoScrollToggle.SetAttribute("VALUE", "ON")
-	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=18, VISIBLECOLUMNS=80`)
+	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=18, VISIBLECOLUMNS=80, FONT="Monospace, 10"`)
 	ui.startStopButton = iup.Button("开始连接")
+	ui.startStopButton.SetAttributes(`PADDING=18x8`)
 	ui.startStopButton.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
 		ui.handleStartStop()
 		return iup.DEFAULT
@@ -191,22 +202,33 @@ func (ui *iupUI) build() {
 		return iup.DEFAULT
 	}))
 
-	configGrid := iup.GridBox(
-		iup.Label("用户名"), ui.usernameInput,
-		iup.Label("密码"), ui.passwordInput,
-		iup.Label("SOCKS 监听地址"), ui.socksBindInput,
-		iup.Label("HTTP 监听地址"), ui.httpBindInput,
-		iup.Label("浏览器程序路径"), iup.Hbox(ui.eipProgramInput, browseButton, clearButton).SetAttribute("GAP", "6"),
-		iup.Label("浏览器参数（每行一个）"), ui.eipArgsInput,
-	).SetAttributes(`NUMDIV=2, ORIENTATION=HORIZONTAL, GAPCOL=10, GAPLIN=8, MARGIN=10x10, EXPAND=HORIZONTAL`)
+	labeledField := func(title string, field iup.Ihandle) iup.Ihandle {
+		return iup.Vbox(
+			iup.Label(title),
+			field,
+		).SetAttributes(`GAP=4, EXPAND=HORIZONTAL`)
+	}
 
-	configTab := iup.Vbox(
-		iup.Label("按需填写账号、本地代理监听地址和 EIP 打开方式即可。"),
-		configGrid,
+	configFields := iup.Vbox(
+		labeledField("用户名", ui.usernameInput),
+		labeledField("密码", ui.passwordInput),
+		labeledField("SOCKS 监听地址", ui.socksBindInput),
+		labeledField("HTTP 监听地址", ui.httpBindInput),
+		labeledField("浏览器程序路径", iup.Hbox(ui.eipProgramInput, browseButton, clearButton).SetAttributes(`GAP=6, EXPAND=HORIZONTAL`)),
+		labeledField("浏览器参数（每行一个）", ui.eipArgsInput),
 		ui.proxyOnlyToggle,
 		ui.debugDumpToggle,
-		ui.startStopButton,
-	).SetAttributes(`TABTITLE="配置", GAP=8, MARGIN=10x10`)
+	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL`)
+
+	configBody := iup.Vbox(
+		iup.Label("按需填写账号、本地代理监听地址和 EIP 打开方式即可。"),
+		configFields,
+	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL, MARGIN=10x10`)
+
+	configTab := iup.Vbox(
+		iup.ScrollBox(configBody).SetAttribute("EXPAND", "YES"),
+		iup.Hbox(iup.Fill(), ui.startStopButton).SetAttributes(`GAP=6, MARGIN=10x0`),
+	).SetAttributes(`TABTITLE="配置", GAP=8, MARGIN=0x0, EXPAND=YES`)
 
 	logsTab := iup.Vbox(
 		iup.Hbox(ui.autoScrollToggle, clearLogsButton, iup.Fill()).SetAttribute("GAP", "6"),
@@ -227,7 +249,7 @@ func (ui *iupUI) build() {
 			go ui.app.Quit()
 			return iup.IGNORE
 		}
-		iup.Hide(ui.dialog)
+		ui.hideMainDialogToTray()
 		return iup.IGNORE
 	}))
 
@@ -283,24 +305,32 @@ func (ui *iupUI) buildInputDialog() {
 		iup.Hbox(iup.Fill(), cancel, submit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
 	ui.inputDialog = iup.Dialog(body).SetAttributes(`TITLE="输入需求", RASTERSIZE=420x220`)
+	ui.inputDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
+		iup.Hide(ui.inputDialog)
+		return iup.IGNORE
+	}))
 }
 
 func (ui *iupUI) buildCaptchaDialog() {
-	ui.captchaPromptLabel = iup.Label("请在图片上按顺序点击对应位置，然后提交")
-	ui.captchaCanvas = iup.Canvas().SetAttributes(`RASTERSIZE=360x240`)
+	ui.captchaPromptLabel = iup.Label("请在图片上按顺序点击对应位置，然后提交").SetAttribute("EXPAND", "HORIZONTAL")
+	ui.captchaCanvas = iup.Canvas().SetAttributes(fmt.Sprintf(`RASTERSIZE=%dx%d`, captchaPreviewWidth, captchaPreviewHeight))
 	ui.captchaCanvas.SetCallback("ACTION", iup.ActionFunc(func(ih iup.Ihandle) int {
 		ui.drawCaptcha(ih)
 		return iup.DEFAULT
 	}))
 	ui.captchaCanvas.SetCallback("BUTTON_CB", iup.ButtonFunc(func(ih iup.Ihandle, button, pressed, x, y int, _ string) int {
 		if button == 1 && pressed == 1 && ui.captchaImage != nil {
-			ui.captchaPoints = append(ui.captchaPoints, captchaPoint{X: x, Y: y})
+			point, ok := ui.mapCaptchaClickToNatural(x, y)
+			if !ok {
+				return iup.DEFAULT
+			}
+			ui.captchaPoints = append(ui.captchaPoints, point)
 			ui.updateCaptchaPointsLabel()
 			iup.Refresh(ih)
 		}
 		return iup.DEFAULT
 	}))
-	ui.captchaPointsLabel = iup.Label("尚未选择坐标")
+	ui.captchaPointsLabel = iup.Label("尚未选择坐标").SetAttributes(`EXPAND=HORIZONTAL, PADDING=4x4`)
 	undo := iup.Button("撤销上一步")
 	undo.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
 		if len(ui.captchaPoints) > 0 {
@@ -329,11 +359,15 @@ func (ui *iupUI) buildCaptchaDialog() {
 	}))
 	body := iup.Vbox(
 		ui.captchaPromptLabel,
-		ui.captchaCanvas,
+		iup.Frame(ui.captchaCanvas).SetAttribute("TITLE", "点击图片选择坐标"),
 		ui.captchaPointsLabel,
 		iup.Hbox(undo, clear, iup.Fill(), cancel, submit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
-	ui.captchaDialog = iup.Dialog(body).SetAttributes(`TITLE="图形验证码", RASTERSIZE=420x380`)
+	ui.captchaDialog = iup.Dialog(body).SetAttributes(`TITLE="图形验证码", RASTERSIZE=800x620, MINSIZE=760x580`)
+	ui.captchaDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
+		iup.Hide(ui.captchaDialog)
+		return iup.IGNORE
+	}))
 }
 
 func (ui *iupUI) loadInitialState() {
@@ -514,7 +548,6 @@ func (ui *iupUI) handleCaptchaPayload(payload any) {
 	bounds := img.Bounds()
 	ui.captchaImageWidth = bounds.Dx()
 	ui.captchaImageHeight = bounds.Dy()
-	ui.captchaCanvas.SetAttribute("RASTERSIZE", fmt.Sprintf("%dx%d", bounds.Dx(), bounds.Dy()))
 	ui.captchaPoints = nil
 	ui.updateCaptchaPointsLabel()
 	ui.registerCaptchaHandle(img)
@@ -537,12 +570,17 @@ func (ui *iupUI) registerCaptchaHandle(img image.Image) {
 func (ui *iupUI) drawCaptcha(ih iup.Ihandle) {
 	iup.DrawBegin(ih)
 	defer iup.DrawEnd(ih)
-	if ui.captchaImage != nil {
-		iup.DrawImage(ih, captchaHandle, 0, 0, ui.captchaImageWidth, ui.captchaImageHeight)
+	preview := ui.captchaPreviewRect()
+	if ui.captchaImage != nil && preview.Width > 0 && preview.Height > 0 {
+		iup.DrawImage(ih, captchaHandle, preview.X, preview.Y, preview.Width, preview.Height)
 	}
 	for idx, point := range ui.captchaPoints {
-		iup.DrawArc(ih, point.X-8, point.Y-8, point.X+8, point.Y+8, 0, 360)
-		iup.DrawText(ih, strconv.Itoa(idx+1), point.X+10, point.Y-10, -1, -1)
+		x, y, ok := ui.mapNaturalPointToPreview(point)
+		if !ok {
+			continue
+		}
+		iup.DrawArc(ih, x-8, y-8, x+8, y+8, 0, 360)
+		iup.DrawText(ih, strconv.Itoa(idx+1), x+10, y-10, -1, -1)
 	}
 }
 
@@ -628,6 +666,64 @@ func (ui *iupUI) renderLogs() {
 	}
 }
 
+func (ui *iupUI) showMainDialog() {
+	ui.dialog.SetAttribute("LOCKLOOP", "NO")
+	ui.dialog.SetAttribute("HIDETASKBAR", "NO")
+	ui.dialog.SetAttribute("STATE", "RESTORE")
+	iup.Show(ui.dialog)
+}
+
+func (ui *iupUI) hideMainDialogToTray() {
+	ui.dialog.SetAttribute("HIDETASKBAR", "YES")
+	ui.dialog.SetAttribute("LOCKLOOP", "YES")
+	iup.Hide(ui.dialog)
+}
+
+func (ui *iupUI) captchaPreviewRect() captchaPreviewRect {
+	if ui.captchaImageWidth <= 0 || ui.captchaImageHeight <= 0 {
+		return captchaPreviewRect{}
+	}
+	scale := math.Min(
+		float64(captchaPreviewWidth)/float64(ui.captchaImageWidth),
+		float64(captchaPreviewHeight)/float64(ui.captchaImageHeight),
+	)
+	if scale <= 0 {
+		return captchaPreviewRect{}
+	}
+	width := maxInt(1, int(math.Round(float64(ui.captchaImageWidth)*scale)))
+	height := maxInt(1, int(math.Round(float64(ui.captchaImageHeight)*scale)))
+	return captchaPreviewRect{
+		X:      (captchaPreviewWidth - width) / 2,
+		Y:      (captchaPreviewHeight - height) / 2,
+		Width:  width,
+		Height: height,
+	}
+}
+
+func (ui *iupUI) mapCaptchaClickToNatural(x, y int) (captchaPoint, bool) {
+	preview := ui.captchaPreviewRect()
+	if preview.Width <= 0 || preview.Height <= 0 {
+		return captchaPoint{}, false
+	}
+	if x < preview.X || x >= preview.X+preview.Width || y < preview.Y || y >= preview.Y+preview.Height {
+		return captchaPoint{}, false
+	}
+	relX := x - preview.X
+	relY := y - preview.Y
+	return captchaPoint{
+		X: mapScaledCaptchaCoordinate(relX, preview.Width, ui.captchaImageWidth),
+		Y: mapScaledCaptchaCoordinate(relY, preview.Height, ui.captchaImageHeight),
+	}, true
+}
+
+func (ui *iupUI) mapNaturalPointToPreview(point captchaPoint) (int, int, bool) {
+	preview := ui.captchaPreviewRect()
+	if preview.Width <= 0 || preview.Height <= 0 {
+		return 0, 0, false
+	}
+	return preview.X + scaleCaptchaCoordinate(point.X, ui.captchaImageWidth, preview.Width), preview.Y + scaleCaptchaCoordinate(point.Y, ui.captchaImageHeight, preview.Height), true
+}
+
 func (ui *iupUI) setRunning(running bool) {
 	ui.running = running
 	if running {
@@ -659,4 +755,35 @@ func mustJSON(v any) []byte {
 		return []byte("[]")
 	}
 	return data
+}
+
+func scaleCaptchaCoordinate(value, naturalSize, previewSize int) int {
+	if naturalSize <= 1 || previewSize <= 1 {
+		return 0
+	}
+	return int(math.Round((float64(value) / float64(naturalSize-1)) * float64(previewSize-1)))
+}
+
+func mapScaledCaptchaCoordinate(value, previewSize, naturalSize int) int {
+	if previewSize <= 1 || naturalSize <= 1 {
+		return 0
+	}
+	return clampInt(int(math.Round((float64(value)/float64(previewSize-1))*float64(naturalSize-1))), 0, naturalSize-1)
+}
+
+func clampInt(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
