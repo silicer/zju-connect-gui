@@ -323,7 +323,7 @@ func (ui *iupUI) buildCaptchaDialog() {
 		return iup.DEFAULT
 	}))
 	ui.captchaCanvas.SetCallback("BUTTON_CB", iup.ButtonFunc(func(ih iup.Ihandle, button, pressed, x, y int, _ string) int {
-		if button == 1 && pressed == 1 && ui.captchaImage != nil {
+		if button == iup.BUTTON1 && pressed == 1 && ui.captchaImage != nil {
 			point, ok := ui.mapCaptchaClickToNatural(ih, x, y)
 			if !ok {
 				return iup.DEFAULT
