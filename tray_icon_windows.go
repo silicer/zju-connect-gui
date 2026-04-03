@@ -4,5 +4,5 @@ package main
 
 import _ "embed"
 
-//go:embed build/windows/icon.ico
+//go:embed assets/gemini.ico
 var trayIconBytes []byte
