@@ -249,7 +249,6 @@ func (ui *iupUI) build() {
 	tabs := iup.Tabs(configTab, logsTab).SetAttributes(`EXPAND=YES`)
 
 	root := iup.Vbox(
-		iup.Label("ZJU Connect GUI").SetAttributes(`FONTSTYLE=BOLD, PADDING=0x4`),
 		ui.statusLabel,
 		tabs,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
