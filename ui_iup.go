@@ -339,7 +339,7 @@ func (ui *iupUI) buildInputDialog() {
 func (ui *iupUI) buildCaptchaDialog() {
 	ui.captchaPromptLabel = iup.Label("请在图片上按顺序点击对应位置，然后提交").SetAttribute("EXPAND", "HORIZONTAL")
 	ui.captchaCanvas = iup.Canvas().SetAttributes(fmt.Sprintf(`RASTERSIZE=%dx%d`, captchaPreviewWidth, captchaPreviewHeight))
-	ui.captchaCanvas.SetCallback("ACTION", iup.CanvasActionFunc(func(ih iup.Ihandle, _, _ float64) int {
+	ui.captchaCanvas.SetCallback("ACTION", iup.ActionFunc(func(ih iup.Ihandle) int {
 		ui.drawCaptcha(ih)
 		return iup.DEFAULT
 	}))
