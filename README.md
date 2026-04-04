@@ -72,6 +72,12 @@ Build the desktop application:
 go build .
 ```
 
+Test the Linux GTK4 path with the official upstream `go-iup` module:
+
+```bash
+go build -tags gtk4 .
+```
+
 Run backend tests:
 
 ```bash

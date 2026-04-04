@@ -73,6 +73,8 @@ go run .
 
 go build .
 
+go build -tags gtk4 .
+
 go test ./internal/backend
 
 GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
