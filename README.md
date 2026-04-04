@@ -94,4 +94,6 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -tags gtk4 -ldflags "-H=windows
 ```
 
 Windows GTK4 builds also need a Windows GTK4 SDK/runtime bundle on the compiler and runtime search paths. The
-packaging workflow now stages that bundle automatically for the Ubuntu-hosted Windows artifact.
+recommended local path is to build from an MSYS2 MINGW64 shell with GTK4 and pkg-config installed. The packaging
+workflow now uses a Windows runner plus `msys2/setup-msys2` to stage that runtime automatically for the Windows
+artifact.
