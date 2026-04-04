@@ -16,6 +16,7 @@ class Config:
     app_binary: Path
     zju_connect: Path
     wintun: Path | None
+    windows_runtime_root: Path | None
     app_name: str
 
 
@@ -27,6 +28,7 @@ class ParsedArgs(argparse.Namespace):
     app_binary: str = ""
     zju_connect: str = ""
     wintun: str | None = None
+    windows_runtime_root: str | None = None
     app_name: str = "zju-connect-gui"
 
 
@@ -57,10 +59,19 @@ def parse_args() -> Config:
     )
     _ = parser.add_argument("--wintun", help="Path to wintun.dll for Windows packages")
     _ = parser.add_argument(
+        "--windows-runtime-root",
+        help="Path to the extracted Windows GTK runtime root for Windows packages",
+    )
+    _ = parser.add_argument(
         "--app-name", default="zju-connect-gui", help="Desktop app base name"
     )
     namespace = parser.parse_args(namespace=ParsedArgs())
     wintun = Path(namespace.wintun).resolve() if namespace.wintun else None
+    windows_runtime_root = (
+        Path(namespace.windows_runtime_root).resolve()
+        if namespace.windows_runtime_root
+        else None
+    )
     return Config(
         target_os=namespace.target_os,
         arch=namespace.arch,
@@ -69,6 +80,7 @@ def parse_args() -> Config:
         app_binary=Path(namespace.app_binary).resolve(),
         zju_connect=Path(namespace.zju_connect).resolve(),
         wintun=wintun,
+        windows_runtime_root=windows_runtime_root,
         app_name=namespace.app_name,
     )
 
@@ -88,13 +100,35 @@ def copy_file(source: Path, destination: Path) -> None:
     _ = shutil.copy2(source, destination)
 
 
-def verify_packaged_layout(stage_dir: Path, target_os: str, app_name: str) -> None:
+def copy_tree(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    _ = shutil.copytree(source, destination)
+
+
+def verify_packaged_layout(
+    stage_dir: Path,
+    target_os: str,
+    app_name: str,
+    windows_runtime_root: Path | None,
+) -> None:
     if target_os == "windows":
         required = [
             stage_dir / f"{app_name}.exe",
             stage_dir / "bin" / "zju-connect.exe",
             stage_dir / "bin" / "wintun.dll",
         ]
+        if windows_runtime_root is not None:
+            required.extend(
+                [
+                    stage_dir / "libgtk-4-1.dll",
+                    stage_dir / "share" / "gtk-4.0",
+                    stage_dir / "share" / "glib-2.0" / "schemas",
+                ]
+            )
     else:
         required = [
             stage_dir / app_name,
@@ -147,7 +181,27 @@ def main() -> None:
         ensure_exists(wintun_source, "wintun.dll")
         copy_file(wintun_source, helper_dir / "wintun.dll")
 
-    verify_packaged_layout(stage_dir, args.target_os, args.app_name)
+        if args.windows_runtime_root is not None:
+            runtime_source = args.windows_runtime_root
+            ensure_exists(runtime_source, "Windows GTK runtime root")
+
+            runtime_bin_dir = runtime_source / "bin"
+            ensure_exists(runtime_bin_dir, "Windows GTK runtime bin directory")
+            for dll_path in sorted(runtime_bin_dir.glob("*.dll")):
+                copy_file(dll_path, stage_dir / dll_path.name)
+
+            for relative_dir in [
+                Path("etc"),
+                Path("share"),
+                Path("lib") / "gdk-pixbuf-2.0",
+                Path("lib") / "girepository-1.0",
+                Path("lib") / "gtk-4.0",
+            ]:
+                copy_tree(runtime_source / relative_dir, stage_dir / relative_dir)
+
+    verify_packaged_layout(
+        stage_dir, args.target_os, args.app_name, args.windows_runtime_root
+    )
 
     print(f"staged {args.target_os}/{args.arch} package at {stage_dir}")
 

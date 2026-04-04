@@ -18,6 +18,8 @@ env:
   GO_VERSION: '1.25.6'
   ZJU_CONNECT_REF: 5c0ac04ade80f90a67038aec240d470f122782e5
   WINTUN_URL: https://www.wintun.net/builds/wintun-0.14.1.zip
+  GVSBUILD_GTK4_URL: https://github.com/wingtk/gvsbuild/releases/download/2026.3.0/GTK4_Gvsbuild_2026.3.0_x64.zip
+  GVSBUILD_GTK4_SHA256: dc6ea6014a691c0843e02ffa0ad3dd07e8fb8cd3bbefb300a2080344b3842ece
 
 jobs:
   verify:
@@ -129,6 +131,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64 g++-mingw-w64 binutils-mingw-w64 pkg-config zip unzip curl
 
+      - name: Download Windows GTK4 bundle
+        if: matrix.target_os == 'windows'
+        shell: bash
+        run: |
+          bundle_dir="$RUNNER_TEMP/gtk4-bundle"
+          bundle_zip="$bundle_dir/gtk4.zip"
+          rm -rf "$bundle_dir"
+          mkdir -p "$bundle_dir"
+          curl -fsSL "$GVSBUILD_GTK4_URL" -o "$bundle_zip"
+          echo "$GVSBUILD_GTK4_SHA256  $bundle_zip" | sha256sum -c -
+          unzip -q "$bundle_zip" -d "$bundle_dir/root"
+
+      - name: Prepare Windows GTK4 bundle
+        if: matrix.target_os == 'windows'
+        shell: bash
+        run: |
+          gtk_root="$RUNNER_TEMP/gtk4-bundle/root"
+          export GTK_ROOT="$gtk_root"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          gtk_root = Path(os.environ["GTK_ROOT"])
+          if not (gtk_root / "bin").is_dir():
+              children = [child for child in gtk_root.iterdir() if child.is_dir()]
+              if len(children) == 1 and (children[0] / "bin").is_dir():
+                  nested_root = children[0]
+                  for child in nested_root.iterdir():
+                      child.rename(gtk_root / child.name)
+                  nested_root.rmdir()
+
+          pkgconfig_dirs = [gtk_root / "lib" / "pkgconfig", gtk_root / "share" / "pkgconfig"]
+          for pkgconfig_dir in pkgconfig_dirs:
+              if not pkgconfig_dir.exists():
+                  continue
+              for pc_file in pkgconfig_dir.glob("*.pc"):
+                  content = pc_file.read_text()
+                  content = content.replace("prefix=C:/gtk", f"prefix={gtk_root.as_posix()}")
+                  content = content.replace("prefix=C:\\gtk", f"prefix={gtk_root.as_posix()}")
+                  pc_file.write_text(content)
+          PY
+
       - name: Build upstream zju-connect
         shell: bash
         working-directory: _deps/zju-connect
@@ -155,10 +199,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/app-build"
+          export GTK_ROOT="$RUNNER_TEMP/gtk4-bundle/root"
+          export PKG_CONFIG_LIBDIR="$GTK_ROOT/lib/pkgconfig:$GTK_ROOT/share/pkgconfig"
+          export PKG_CONFIG_SYSTEM_INCLUDE_PATH="$GTK_ROOT/include"
+          export PKG_CONFIG_SYSTEM_LIBRARY_PATH="$GTK_ROOT/lib"
           CC=x86_64-w64-mingw32-gcc \
           CXX=x86_64-w64-mingw32-g++ \
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=1 \
-          go build -trimpath -ldflags='-H=windowsgui' -o "$RUNNER_TEMP/app-build/${APP_NAME}.exe" .
+          go build -tags gtk4 -trimpath -ldflags='-H=windowsgui' -o "$RUNNER_TEMP/app-build/${APP_NAME}.exe" .
 
       - name: Build native app (non-Windows)
         if: matrix.target_os != 'windows'
@@ -189,6 +237,7 @@ jobs:
             args+=(
               --zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect.exe"
               --wintun "$RUNNER_TEMP/wintun/wintun/bin/${{ matrix.wintun_arch }}/wintun.dll"
+              --windows-runtime-root "$RUNNER_TEMP/gtk4-bundle/root"
             )
           else
             args+=(--zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect")
