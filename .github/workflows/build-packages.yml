@@ -151,6 +151,7 @@ jobs:
           export GTK_ROOT="$gtk_root"
           python - <<'PY'
           import os
+          import re
           from pathlib import Path
 
           gtk_root = Path(os.environ["GTK_ROOT"])
@@ -173,8 +174,12 @@ jobs:
           for pkgconfig_dir in pkgconfig_dirs:
               for pc_file in pkgconfig_dir.glob("*.pc"):
                   content = pc_file.read_text()
-                  content = content.replace("prefix=C:/gtk", f"prefix={gtk_root.as_posix()}")
-                  content = content.replace("prefix=C:\\gtk", f"prefix={gtk_root.as_posix()}")
+                  content = re.sub(
+                      r"^prefix=.*$",
+                      f"prefix={gtk_root.as_posix()}",
+                      content,
+                      flags=re.MULTILINE,
+                  )
                   pc_file.write_text(content)
 
           gtk4_pc = [pc_file for pkgconfig_dir in pkgconfig_dirs for pc_file in pkgconfig_dir.glob("gtk4.pc")]
