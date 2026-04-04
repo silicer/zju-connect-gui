@@ -18,8 +18,6 @@ env:
   GO_VERSION: '1.25.6'
   ZJU_CONNECT_REF: 5c0ac04ade80f90a67038aec240d470f122782e5
   WINTUN_URL: https://www.wintun.net/builds/wintun-0.14.1.zip
-  GVSBUILD_GTK4_URL: https://github.com/wingtk/gvsbuild/releases/download/2026.3.0/GTK4_Gvsbuild_2026.3.0_x64.zip
-  GVSBUILD_GTK4_SHA256: dc6ea6014a691c0843e02ffa0ad3dd07e8fb8cd3bbefb300a2080344b3842ece
 
 jobs:
   verify:
@@ -59,7 +57,7 @@ jobs:
           - target_os: windows
             goos: windows
             goarch: amd64
-            runner: ubuntu-24.04
+            runner: windows-latest
             archive_suffix: .zip
             wintun_arch: amd64
           - target_os: linux
@@ -119,78 +117,26 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Setup MSYS2
+        if: matrix.target_os == 'windows'
+        id: setup-msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-gtk4
+
       - name: Install Linux build dependencies
         if: matrix.target_os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libgtk-4-dev libgtk-3-dev libayatana-appindicator3-dev
 
-      - name: Install Windows cross-compilation dependencies
-        if: matrix.target_os == 'windows'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64 g++-mingw-w64 binutils-mingw-w64 pkg-config zip unzip curl
-
-      - name: Download Windows GTK4 bundle
-        if: matrix.target_os == 'windows'
-        shell: bash
-        run: |
-          bundle_dir="$RUNNER_TEMP/gtk4-bundle"
-          bundle_zip="$bundle_dir/gtk4.zip"
-          rm -rf "$bundle_dir"
-          mkdir -p "$bundle_dir"
-          curl -fsSL "$GVSBUILD_GTK4_URL" -o "$bundle_zip"
-          echo "$GVSBUILD_GTK4_SHA256  $bundle_zip" | sha256sum -c -
-          unzip -q "$bundle_zip" -d "$bundle_dir/root"
-
-      - name: Prepare Windows GTK4 bundle
-        if: matrix.target_os == 'windows'
-        shell: bash
-        run: |
-          gtk_root="$RUNNER_TEMP/gtk4-bundle/root"
-          export GTK_ROOT="$gtk_root"
-          python - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          gtk_root = Path(os.environ["GTK_ROOT"])
-          github_env = Path(os.environ["GITHUB_ENV"])
-          if not (gtk_root / "bin").is_dir():
-              children = [child for child in gtk_root.iterdir() if child.is_dir()]
-              if len(children) == 1 and (children[0] / "bin").is_dir():
-                  nested_root = children[0]
-                  for child in nested_root.iterdir():
-                      child.rename(gtk_root / child.name)
-                  nested_root.rmdir()
-
-          pkgconfig_dirs = sorted(
-              {
-                  pkgconfig_dir
-                  for pkgconfig_dir in gtk_root.rglob("pkgconfig")
-                  if pkgconfig_dir.is_dir()
-              }
-          )
-          for pkgconfig_dir in pkgconfig_dirs:
-              for pc_file in pkgconfig_dir.glob("*.pc"):
-                  content = pc_file.read_text()
-                  content = re.sub(
-                      r"^prefix=.*$",
-                      f"prefix={gtk_root.as_posix()}",
-                      content,
-                      flags=re.MULTILINE,
-                  )
-                  pc_file.write_text(content)
-
-          gtk4_pc = [pc_file for pkgconfig_dir in pkgconfig_dirs for pc_file in pkgconfig_dir.glob("gtk4.pc")]
-          if not gtk4_pc:
-              raise SystemExit(f"gtk4.pc not found under {gtk_root}")
-
-          with github_env.open("a", encoding="utf-8") as env_file:
-              env_file.write(f"GTK_PKG_CONFIG_DIRS={':'.join(path.as_posix() for path in pkgconfig_dirs)}\n")
-          PY
-
       - name: Build upstream zju-connect
+        if: matrix.target_os != 'windows'
         shell: bash
         working-directory: _deps/zju-connect
         run: |
@@ -201,32 +147,40 @@ jobs:
           fi
           CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -o "$RUNNER_TEMP/zju-connect-build/$output_name" .
 
+      - name: Build upstream zju-connect (Windows)
+        if: matrix.target_os == 'windows'
+        shell: msys2 {0}
+        working-directory: _deps/zju-connect
+        run: |
+          runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          mkdir -p "$runner_temp/zju-connect-build"
+          CGO_ENABLED=0 go build -trimpath -o "$runner_temp/zju-connect-build/zju-connect.exe" .
+
       - name: Download wintun runtime
         if: matrix.target_os == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          zip_path="$RUNNER_TEMP/wintun.zip"
-          extract_root="$RUNNER_TEMP/wintun"
-          rm -rf "$extract_root"
-          curl -fsSL "$WINTUN_URL" -o "$zip_path"
-          unzip -q "$zip_path" -d "$extract_root"
+          $zipPath = Join-Path $env:RUNNER_TEMP 'wintun.zip'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'wintun'
+          if (Test-Path $extractRoot) {
+            Remove-Item -Recurse -Force $extractRoot
+          }
+          Invoke-WebRequest -Uri $env:WINTUN_URL -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
 
       - name: Build native app (Windows)
         if: matrix.target_os == 'windows'
-        shell: bash
+        shell: msys2 {0}
         run: |
-          mkdir -p "$RUNNER_TEMP/app-build"
-          export GTK_ROOT="$RUNNER_TEMP/gtk4-bundle/root"
-          export PKG_CONFIG_PATH="$GTK_PKG_CONFIG_DIRS"
-          export PKG_CONFIG_LIBDIR="$GTK_PKG_CONFIG_DIRS"
-          export PKG_CONFIG_SYSTEM_INCLUDE_PATH="$GTK_ROOT/include"
-          export LIBRARY_PATH="$GTK_ROOT/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+          runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          mkdir -p "$runner_temp/app-build"
+          export PATH="/mingw64/bin:$PATH"
+          export GTK_ROOT="/mingw64"
+          export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig:/mingw64/share/pkgconfig"
           pkg-config --cflags gtk4
           pkg-config --libs gtk4
-          CC=x86_64-w64-mingw32-gcc \
-          CXX=x86_64-w64-mingw32-g++ \
-          GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=1 \
-          go build -tags gtk4 -trimpath -ldflags='-H=windowsgui' -o "$RUNNER_TEMP/app-build/${APP_NAME}.exe" .
+          gcc --version
+          go build -tags gtk4 -trimpath -ldflags='-H=windowsgui' -o "$runner_temp/app-build/${APP_NAME}.exe" .
 
       - name: Build native app (non-Windows)
         if: matrix.target_os != 'windows'
@@ -240,12 +194,10 @@ jobs:
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=1 go build $build_tags -trimpath -o "$RUNNER_TEMP/app-build/$APP_NAME" .
 
       - name: Stage package contents
+        if: matrix.target_os != 'windows'
         shell: bash
         run: |
           app_binary="$RUNNER_TEMP/app-build/$APP_NAME"
-          if [[ "$TARGET_OS" == "windows" ]]; then
-            app_binary="$RUNNER_TEMP/app-build/${APP_NAME}.exe"
-          fi
           args=(
             --target-os "$TARGET_OS"
             --arch "$GOARCH"
@@ -253,16 +205,27 @@ jobs:
             --staging-root "$RUNNER_TEMP/stage"
             --app-binary "$app_binary"
           )
-          if [[ "$TARGET_OS" == "windows" ]]; then
-            args+=(
-              --zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect.exe"
-              --wintun "$RUNNER_TEMP/wintun/wintun/bin/${{ matrix.wintun_arch }}/wintun.dll"
-              --windows-runtime-root "$RUNNER_TEMP/gtk4-bundle/root"
-            )
-          else
-            args+=(--zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect")
-          fi
+          args+=(--zju-connect "$RUNNER_TEMP/zju-connect-build/zju-connect")
           python scripts/package_ci_artifact.py "${args[@]}"
+
+      - name: Stage package contents (Windows)
+        if: matrix.target_os == 'windows'
+        shell: pwsh
+        run: |
+          $appBinary = Join-Path $env:RUNNER_TEMP "app-build/$($env:APP_NAME).exe"
+          $zjuConnect = Join-Path $env:RUNNER_TEMP 'zju-connect-build/zju-connect.exe'
+          $wintun = Join-Path $env:RUNNER_TEMP 'wintun/wintun/bin/${{ matrix.wintun_arch }}/wintun.dll'
+          $windowsRuntimeRoot = Join-Path '${{ steps.setup-msys2.outputs.msys2-location }}' 'mingw64'
+          $stagingRoot = Join-Path $env:RUNNER_TEMP 'stage'
+          python scripts/package_ci_artifact.py `
+            --target-os windows `
+            --arch $env:GOARCH `
+            --artifact-name $env:ARTIFACT_NAME `
+            --staging-root $stagingRoot `
+            --app-binary $appBinary `
+            --zju-connect $zjuConnect `
+            --wintun $wintun `
+            --windows-runtime-root $windowsRuntimeRoot
 
       - name: Create Linux archive
         if: matrix.target_os == 'linux'
@@ -282,15 +245,16 @@ jobs:
 
       - name: Create Windows archive
         if: matrix.target_os == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p dist
-          rm -f "$ARCHIVE_PATH"
-          (
-            cd "$RUNNER_TEMP/stage"
-            zip -qr "$GITHUB_WORKSPACE/$ARCHIVE_PATH" "$ARTIFACT_NAME"
-          )
-          test -f "$ARCHIVE_PATH"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          if (Test-Path $env:ARCHIVE_PATH) {
+            Remove-Item -Force $env:ARCHIVE_PATH
+          }
+          Compress-Archive -Path (Join-Path $env:RUNNER_TEMP "stage/$($env:ARTIFACT_NAME)") -DestinationPath $env:ARCHIVE_PATH
+          if (-not (Test-Path $env:ARCHIVE_PATH)) {
+            throw "Missing archive at $env:ARCHIVE_PATH"
+          }
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v7
