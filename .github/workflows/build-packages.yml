@@ -154,6 +154,7 @@ jobs:
           from pathlib import Path
 
           gtk_root = Path(os.environ["GTK_ROOT"])
+          github_env = Path(os.environ["GITHUB_ENV"])
           if not (gtk_root / "bin").is_dir():
               children = [child for child in gtk_root.iterdir() if child.is_dir()]
               if len(children) == 1 and (children[0] / "bin").is_dir():
@@ -162,15 +163,26 @@ jobs:
                       child.rename(gtk_root / child.name)
                   nested_root.rmdir()
 
-          pkgconfig_dirs = [gtk_root / "lib" / "pkgconfig", gtk_root / "share" / "pkgconfig"]
+          pkgconfig_dirs = sorted(
+              {
+                  pkgconfig_dir
+                  for pkgconfig_dir in gtk_root.rglob("pkgconfig")
+                  if pkgconfig_dir.is_dir()
+              }
+          )
           for pkgconfig_dir in pkgconfig_dirs:
-              if not pkgconfig_dir.exists():
-                  continue
               for pc_file in pkgconfig_dir.glob("*.pc"):
                   content = pc_file.read_text()
                   content = content.replace("prefix=C:/gtk", f"prefix={gtk_root.as_posix()}")
                   content = content.replace("prefix=C:\\gtk", f"prefix={gtk_root.as_posix()}")
                   pc_file.write_text(content)
+
+          gtk4_pc = [pc_file for pkgconfig_dir in pkgconfig_dirs for pc_file in pkgconfig_dir.glob("gtk4.pc")]
+          if not gtk4_pc:
+              raise SystemExit(f"gtk4.pc not found under {gtk_root}")
+
+          with github_env.open("a", encoding="utf-8") as env_file:
+              env_file.write(f"GTK_PKG_CONFIG_DIRS={':'.join(path.as_posix() for path in pkgconfig_dirs)}\n")
           PY
 
       - name: Build upstream zju-connect
@@ -200,9 +212,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/app-build"
           export GTK_ROOT="$RUNNER_TEMP/gtk4-bundle/root"
-          export PKG_CONFIG_LIBDIR="$GTK_ROOT/lib/pkgconfig:$GTK_ROOT/share/pkgconfig"
+          export PKG_CONFIG_PATH="$GTK_PKG_CONFIG_DIRS"
+          export PKG_CONFIG_LIBDIR="$GTK_PKG_CONFIG_DIRS"
           export PKG_CONFIG_SYSTEM_INCLUDE_PATH="$GTK_ROOT/include"
           export PKG_CONFIG_SYSTEM_LIBRARY_PATH="$GTK_ROOT/lib"
+          pkg-config --cflags gtk4
           CC=x86_64-w64-mingw32-gcc \
           CXX=x86_64-w64-mingw32-g++ \
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=1 \
