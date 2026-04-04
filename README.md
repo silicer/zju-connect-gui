@@ -90,5 +90,8 @@ can pull in tray dependencies from the desktop entrypoint that are not always pr
 Build the Windows desktop package:
 
 ```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -tags gtk4 -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
 ```
+
+Windows GTK4 builds also need a Windows GTK4 SDK/runtime bundle on the compiler and runtime search paths. The
+packaging workflow now stages that bundle automatically for the Ubuntu-hosted Windows artifact.

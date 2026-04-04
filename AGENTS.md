@@ -77,8 +77,11 @@ go build -tags gtk4 .
 
 go test ./internal/backend
 
-GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -tags gtk4 -ldflags "-H=windowsgui" -o zju-connect-gui.exe .
 ```
+
+Windows GTK4 builds require a Windows GTK4 SDK/runtime bundle in the compiler and runtime search paths. The current
+Ubuntu-hosted packaging workflow fetches and stages that bundle automatically for packaged artifacts.
 
 ## NOTES
 - Repository size is still small, but backend complexity now clusters around the `internal/backend/proxy_manager_*.go` group and `ui_iup.go`.
