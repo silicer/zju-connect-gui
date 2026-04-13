@@ -29,10 +29,8 @@ const (
 	captchaPreviewWidth  = 720
 	captchaPreviewHeight = 420
 
-	inputDialogGenericRasterSize = "420x250"
-	inputDialogGenericMinSize    = "420x220"
-	inputDialogSMSRasterSize     = "420x140"
-	inputDialogSMSMinSize        = "420x140"
+	inputDialogGenericMinSize = "420x220"
+	inputDialogSMSMinSize     = "420x170"
 )
 
 type captchaPoint struct {
@@ -240,12 +238,15 @@ func (ui *iupUI) build() error {
 			field,
 		).SetAttributes(`GAP=4, EXPAND=HORIZONTAL`)
 	}
+	toggleField := func(title string, toggle iup.Ihandle, detail iup.Ihandle) iup.Ihandle {
+		content := toggle
+		if detail != 0 {
+			content = iup.Vbox(toggle, detail).SetAttributes(`GAP=2, EXPAND=HORIZONTAL`)
+		}
+		return labeledField(title, content)
+	}
 
 	proxyOnlyHelp := iup.Label("开启后，仅提供本机 SOCKS 和 HTTP 代理端口。\n关闭后，还会启用 TUN / 系统路由接管。").SetAttributes(`EXPAND=HORIZONTAL, PADDING=18x0`)
-	proxyOnlyField := iup.Vbox(
-		ui.proxyOnlyToggle,
-		proxyOnlyHelp,
-	).SetAttributes(`GAP=2, EXPAND=HORIZONTAL`)
 
 	configFields := iup.Vbox(
 		labeledField("用户名", ui.usernameInput),
@@ -254,9 +255,9 @@ func (ui *iupUI) build() error {
 		labeledField("HTTP 监听地址", ui.httpBindInput),
 		labeledField("浏览器程序路径", iup.Hbox(ui.eipProgramInput, browseButton, clearButton).SetAttributes(`GAP=6, EXPAND=HORIZONTAL`)),
 		labeledField("浏览器参数（每行一个）", ui.eipArgsInput),
-		ui.eipAutoOpenToggle,
-		proxyOnlyField,
-		ui.debugDumpToggle,
+		toggleField("连接后自动打开浏览器", ui.eipAutoOpenToggle, 0),
+		toggleField("代理模式", ui.proxyOnlyToggle, proxyOnlyHelp),
+		toggleField("调试模式", ui.debugDumpToggle, 0),
 	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL`)
 
 	configBody := iup.Vbox(
@@ -333,12 +334,13 @@ func (ui *iupUI) buildInputDialog() {
 		ui.submitInputDialog()
 		return iup.DEFAULT
 	}))
-	body := iup.Vbox(
+	contentArea := iup.Vbox(
 		ui.inputPromptLabel,
 		ui.inputSwitcher,
-		iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttribute("GAP", "6"),
-	).SetAttributes(`GAP=8, MARGIN=10x10`)
-	ui.inputDialog = iup.Dialog(body).SetAttributes(fmt.Sprintf(`TITLE="输入需求", RASTERSIZE=%s, MINSIZE=%s`, inputDialogGenericRasterSize, inputDialogGenericMinSize))
+	).SetAttributes(`GAP=8, EXPAND=YES`)
+	actionBar := iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttributes(`GAP=6, EXPAND=HORIZONTAL`)
+	body := iup.Vbox(contentArea, actionBar).SetAttributes(`GAP=10, MARGIN=10x10, EXPAND=YES`)
+	ui.inputDialog = iup.Dialog(body).SetAttributes(fmt.Sprintf(`TITLE="输入需求", MINSIZE=%s`, inputDialogGenericMinSize))
 	if ui.appIcon != 0 {
 		iup.SetAttributeHandle(ui.inputDialog, "ICON", ui.appIcon)
 	}
@@ -788,15 +790,16 @@ func (ui *iupUI) applyInputDialogLayout(mode inputDialogMode) {
 	if mode == inputDialogModeSMS {
 		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputText)
 		iup.SetAttributeHandle(ui.inputDialog, "DEFAULTENTER", ui.inputSubmit)
-		ui.inputDialog.SetAttribute("RASTERSIZE", inputDialogSMSRasterSize)
+		ui.inputDialog.SetAttribute("RASTERSIZE", nil)
 		ui.inputDialog.SetAttribute("MINSIZE", inputDialogSMSMinSize)
 	} else {
 		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputMultiline)
 		ui.inputDialog.SetAttribute("DEFAULTENTER", nil)
-		ui.inputDialog.SetAttribute("RASTERSIZE", inputDialogGenericRasterSize)
+		ui.inputDialog.SetAttribute("RASTERSIZE", nil)
 		ui.inputDialog.SetAttribute("MINSIZE", inputDialogGenericMinSize)
 	}
 	iup.RefreshChildren(ui.inputDialog)
+	iup.Refresh(ui.inputDialog)
 }
 
 func (ui *iupUI) showMainDialog() {
