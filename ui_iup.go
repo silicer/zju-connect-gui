@@ -28,6 +28,9 @@ const (
 
 	captchaPreviewWidth  = 720
 	captchaPreviewHeight = 420
+
+	inputDialogGenericMinSize = "420x220"
+	inputDialogSMSMinSize     = "420x170"
 )
 
 type captchaPoint struct {
@@ -64,19 +67,21 @@ type iupUI struct {
 	startStopButton  iup.Ihandle
 	appIcon          iup.Ihandle
 
-	usernameInput   iup.Ihandle
-	passwordInput   iup.Ihandle
-	socksBindInput  iup.Ihandle
-	httpBindInput   iup.Ihandle
-	proxyOnlyToggle iup.Ihandle
-	debugDumpToggle iup.Ihandle
-	eipProgramInput iup.Ihandle
-	eipArgsInput    iup.Ihandle
+	usernameInput     iup.Ihandle
+	passwordInput     iup.Ihandle
+	socksBindInput    iup.Ihandle
+	httpBindInput     iup.Ihandle
+	proxyOnlyToggle   iup.Ihandle
+	debugDumpToggle   iup.Ihandle
+	eipProgramInput   iup.Ihandle
+	eipArgsInput      iup.Ihandle
+	eipAutoOpenToggle iup.Ihandle
 
 	inputDialog      iup.Ihandle
 	inputPromptLabel iup.Ihandle
 	inputText        iup.Ihandle
 	inputMultiline   iup.Ihandle
+	inputSwitcher    iup.Ihandle
 	inputSubmit      iup.Ihandle
 	inputMode        inputDialogMode
 
@@ -92,7 +97,12 @@ type iupUI struct {
 	hasCaptchaHandle    bool
 	captchaImageHandleM sync.Mutex
 
-	logs       []string
+	logs        []string
+	logValueLen int
+
+	pendingLogM     sync.Mutex
+	pendingLogLines []string
+
 	running    bool
 	lastSaved  LaunchOptions
 	hasSaved   bool
@@ -141,6 +151,11 @@ func (ui *iupUI) Quit() {
 }
 
 func (ui *iupUI) EmitEvent(event string, payload any) {
+	if event == "log" {
+		line, _ := payload.(string)
+		ui.bufferLogLine(strings.TrimSpace(line))
+		return
+	}
 	ui.enqueue(func() {
 		ui.handleEvent(event, payload)
 	})
@@ -181,6 +196,7 @@ func (ui *iupUI) build() error {
 	ui.debugDumpToggle = iup.Toggle("调试模式")
 	ui.eipProgramInput = iup.Text().SetAttributes(`EXPAND=HORIZONTAL`)
 	ui.eipArgsInput = iup.MultiLine().SetAttributes(`EXPAND=HORIZONTAL, VISIBLELINES=4`)
+	ui.eipAutoOpenToggle = iup.Toggle("连接后打开浏览器")
 	ui.autoScrollToggle = iup.Toggle("自动滚动")
 	ui.autoScrollToggle.SetAttribute("VALUE", "ON")
 	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=18, VISIBLECOLUMNS=80, FONT="Monospace, 10"`)
@@ -212,8 +228,7 @@ func (ui *iupUI) build() error {
 
 	clearLogsButton := iup.Button("清空日志")
 	clearLogsButton.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
-		ui.logs = nil
-		ui.renderLogs()
+		ui.clearLogs()
 		return iup.DEFAULT
 	}))
 
@@ -223,12 +238,15 @@ func (ui *iupUI) build() error {
 			field,
 		).SetAttributes(`GAP=4, EXPAND=HORIZONTAL`)
 	}
+	toggleField := func(title string, toggle iup.Ihandle, detail iup.Ihandle) iup.Ihandle {
+		content := toggle
+		if detail != 0 {
+			content = iup.Vbox(toggle, detail).SetAttributes(`GAP=2, EXPAND=HORIZONTAL`)
+		}
+		return labeledField(title, content)
+	}
 
 	proxyOnlyHelp := iup.Label("开启后，仅提供本机 SOCKS 和 HTTP 代理端口。\n关闭后，还会启用 TUN / 系统路由接管。").SetAttributes(`EXPAND=HORIZONTAL, PADDING=18x0`)
-	proxyOnlyField := iup.Vbox(
-		ui.proxyOnlyToggle,
-		proxyOnlyHelp,
-	).SetAttributes(`GAP=2, EXPAND=HORIZONTAL`)
 
 	configFields := iup.Vbox(
 		labeledField("用户名", ui.usernameInput),
@@ -237,8 +255,9 @@ func (ui *iupUI) build() error {
 		labeledField("HTTP 监听地址", ui.httpBindInput),
 		labeledField("浏览器程序路径", iup.Hbox(ui.eipProgramInput, browseButton, clearButton).SetAttributes(`GAP=6, EXPAND=HORIZONTAL`)),
 		labeledField("浏览器参数（每行一个）", ui.eipArgsInput),
-		proxyOnlyField,
-		ui.debugDumpToggle,
+		toggleField("连接后自动打开浏览器", ui.eipAutoOpenToggle, 0),
+		toggleField("代理模式", ui.proxyOnlyToggle, proxyOnlyHelp),
+		toggleField("调试模式", ui.debugDumpToggle, 0),
 	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL`)
 
 	configBody := iup.Vbox(
@@ -284,6 +303,7 @@ func (ui *iupUI) build() error {
 			case fn := <-ui.actions:
 				fn()
 			default:
+				ui.flushPendingLogs()
 				return iup.DEFAULT
 			}
 		}
@@ -302,14 +322,8 @@ func (ui *iupUI) build() error {
 func (ui *iupUI) buildInputDialog() {
 	ui.inputPromptLabel = iup.Label("请输入内容")
 	ui.inputText = iup.Text().SetAttributes(`EXPAND=HORIZONTAL`)
-	ui.inputText.SetCallback("ACTION", iup.TextActionFunc(func(ih iup.Ihandle, c int, _ string) int {
-		if ui.inputMode == inputDialogModeSMS && c == 13 {
-			ui.submitInputDialog()
-			return iup.IGNORE
-		}
-		return iup.DEFAULT
-	}))
 	ui.inputMultiline = iup.MultiLine().SetAttributes(`VISIBLELINES=6, EXPAND=YES`)
+	ui.inputSwitcher = iup.Zbox(ui.inputText, ui.inputMultiline).SetAttributes(`CHILDSIZEALL=NO, EXPAND=YES`)
 	cancel := iup.Button("取消")
 	cancel.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.inputDialog)
@@ -320,16 +334,18 @@ func (ui *iupUI) buildInputDialog() {
 		ui.submitInputDialog()
 		return iup.DEFAULT
 	}))
-	body := iup.Vbox(
+	contentArea := iup.Vbox(
 		ui.inputPromptLabel,
-		ui.inputText,
-		ui.inputMultiline,
-		iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttribute("GAP", "6"),
-	).SetAttributes(`GAP=8, MARGIN=10x10`)
-	ui.inputDialog = iup.Dialog(body).SetAttributes(`TITLE="输入需求", RASTERSIZE=420x250, MINSIZE=420x220`)
+		ui.inputSwitcher,
+	).SetAttributes(`GAP=8, EXPAND=YES`)
+	actionBar := iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttributes(`GAP=6, EXPAND=HORIZONTAL`)
+	body := iup.Vbox(contentArea, actionBar).SetAttributes(`GAP=10, MARGIN=10x10, EXPAND=YES`)
+	ui.inputDialog = iup.Dialog(body).SetAttributes(fmt.Sprintf(`TITLE="输入需求", MINSIZE=%s`, inputDialogGenericMinSize))
 	if ui.appIcon != 0 {
 		iup.SetAttributeHandle(ui.inputDialog, "ICON", ui.appIcon)
 	}
+	iup.SetAttributeHandle(ui.inputDialog, "DEFAULTESC", cancel)
+	ui.applyInputDialogLayout(inputDialogModeGeneric)
 	ui.inputDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.inputDialog)
 		return iup.IGNORE
@@ -450,6 +466,7 @@ func (ui *iupUI) currentOptions() LaunchOptions {
 	options.HTTPBind = strings.TrimSpace(ui.httpBindInput.GetAttribute("VALUE"))
 	options.EIPBrowserProgram = strings.TrimSpace(ui.eipProgramInput.GetAttribute("VALUE"))
 	options.EIPBrowserArgs = parseEIPBrowserArgs(ui.eipArgsInput.GetAttribute("VALUE"))
+	options.EIPAutoOpen = ui.eipAutoOpenToggle.GetAttribute("VALUE") == "ON"
 	options.TunMode = ui.proxyOnlyToggle.GetAttribute("VALUE") != "ON"
 	options.DebugDump = ui.debugDumpToggle.GetAttribute("VALUE") == "ON"
 	return options
@@ -462,6 +479,11 @@ func (ui *iupUI) applyOptions(options LaunchOptions) {
 	ui.httpBindInput.SetAttribute("VALUE", options.HTTPBind)
 	ui.eipProgramInput.SetAttribute("VALUE", options.EIPBrowserProgram)
 	ui.eipArgsInput.SetAttribute("VALUE", strings.Join(options.EIPBrowserArgs, "\n"))
+	if options.EIPAutoOpen {
+		ui.eipAutoOpenToggle.SetAttribute("VALUE", "ON")
+	} else {
+		ui.eipAutoOpenToggle.SetAttribute("VALUE", "OFF")
+	}
 	if options.TunMode {
 		ui.proxyOnlyToggle.SetAttribute("VALUE", "OFF")
 	} else {
@@ -492,7 +514,7 @@ func (ui *iupUI) handleEvent(event string, payload any) {
 	switch event {
 	case "log":
 		line, _ := payload.(string)
-		ui.appendLog(strings.TrimSpace(line))
+		ui.bufferLogLine(strings.TrimSpace(line))
 	case "error":
 		message, _ := payload.(string)
 		ui.setStatus(message)
@@ -539,18 +561,16 @@ func (ui *iupUI) handleInputPayload(payload any) {
 	if kind == "sms" {
 		ui.inputMode = inputDialogModeSMS
 		ui.inputDialog.SetAttribute("TITLE", "短信验证码")
-		ui.inputText.SetAttribute("VISIBLE", "YES")
-		ui.inputMultiline.SetAttribute("VISIBLE", "NO")
 		ui.inputText.SetAttribute("VALUE", "")
 	} else {
 		ui.inputMode = inputDialogModeGeneric
 		ui.inputDialog.SetAttribute("TITLE", "输入需求")
-		ui.inputText.SetAttribute("VISIBLE", "NO")
-		ui.inputMultiline.SetAttribute("VISIBLE", "YES")
 		ui.inputMultiline.SetAttribute("VALUE", "")
 	}
 	ui.inputPromptLabel.SetAttribute("TITLE", prompt)
+	ui.applyInputDialogLayout(ui.inputMode)
 	iup.Show(ui.inputDialog)
+	iup.RefreshChildren(ui.inputDialog)
 	iup.Refresh(ui.inputDialog)
 	if ui.inputMode == inputDialogModeSMS {
 		iup.SetFocus(ui.inputText)
@@ -683,21 +703,103 @@ func (ui *iupUI) updateCaptchaPointsLabel() {
 }
 
 func (ui *iupUI) appendLog(line string) {
-	if line == "" {
+	ui.appendLogs([]string{line})
+}
+
+func (ui *iupUI) appendLogs(lines []string) {
+	if len(lines) == 0 {
 		return
 	}
-	ui.logs = append(ui.logs, line)
+	filtered := lines[:0]
+	for _, line := range lines {
+		if line != "" {
+			filtered = append(filtered, line)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	hadLogs := len(ui.logs) > 0
+	ui.logs = append(ui.logs, filtered...)
 	if len(ui.logs) > maxLogEntries {
 		ui.logs = append([]string(nil), ui.logs[len(ui.logs)-maxLogEntries:]...)
+		ui.renderLogs()
+		return
 	}
-	ui.renderLogs()
+	ui.appendLogsToWidget(filtered, hadLogs)
 }
 
 func (ui *iupUI) renderLogs() {
-	ui.logArea.SetAttribute("VALUE", strings.Join(ui.logs, "\n"))
+	value := strings.Join(ui.logs, "\n")
+	ui.logArea.SetAttribute("VALUE", value)
+	ui.logValueLen = len(value)
 	if ui.autoScrollToggle.GetAttribute("VALUE") == "ON" {
-		ui.logArea.SetAttribute("CARETPOS", strconv.Itoa(len(ui.logArea.GetAttribute("VALUE"))))
+		ui.logArea.SetAttribute("CARETPOS", strconv.Itoa(ui.logValueLen))
 	}
+}
+
+func (ui *iupUI) appendLogsToWidget(lines []string, hadLogs bool) {
+	if len(lines) == 0 {
+		return
+	}
+	appended := strings.Join(lines, "\n")
+	if appended == "" {
+		return
+	}
+	if hadLogs {
+		appended = "\n" + appended
+	}
+	ui.logArea.SetAttribute("APPEND", appended)
+	ui.logValueLen += len(appended)
+	if ui.autoScrollToggle.GetAttribute("VALUE") == "ON" {
+		ui.logArea.SetAttribute("CARETPOS", strconv.Itoa(ui.logValueLen))
+	}
+}
+
+func (ui *iupUI) clearLogs() {
+	ui.pendingLogM.Lock()
+	ui.pendingLogLines = nil
+	ui.pendingLogM.Unlock()
+	ui.logs = nil
+	ui.logValueLen = 0
+	ui.renderLogs()
+}
+
+func (ui *iupUI) bufferLogLine(line string) {
+	if line == "" {
+		return
+	}
+	ui.pendingLogM.Lock()
+	ui.pendingLogLines = append(ui.pendingLogLines, line)
+	ui.pendingLogM.Unlock()
+}
+
+func (ui *iupUI) flushPendingLogs() {
+	ui.pendingLogM.Lock()
+	if len(ui.pendingLogLines) == 0 {
+		ui.pendingLogM.Unlock()
+		return
+	}
+	lines := append([]string(nil), ui.pendingLogLines...)
+	ui.pendingLogLines = nil
+	ui.pendingLogM.Unlock()
+	ui.appendLogs(lines)
+}
+
+func (ui *iupUI) applyInputDialogLayout(mode inputDialogMode) {
+	if mode == inputDialogModeSMS {
+		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputText)
+		iup.SetAttributeHandle(ui.inputDialog, "DEFAULTENTER", ui.inputSubmit)
+		ui.inputDialog.SetAttribute("RASTERSIZE", nil)
+		ui.inputDialog.SetAttribute("MINSIZE", inputDialogSMSMinSize)
+	} else {
+		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputMultiline)
+		ui.inputDialog.SetAttribute("DEFAULTENTER", nil)
+		ui.inputDialog.SetAttribute("RASTERSIZE", nil)
+		ui.inputDialog.SetAttribute("MINSIZE", inputDialogGenericMinSize)
+	}
+	iup.RefreshChildren(ui.inputDialog)
+	iup.Refresh(ui.inputDialog)
 }
 
 func (ui *iupUI) showMainDialog() {
