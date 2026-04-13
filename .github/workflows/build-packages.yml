@@ -65,12 +65,14 @@ jobs:
             goarch: amd64
             runner: ubuntu-24.04
             archive_suffix: .tar.gz
+            appimage_arch: x86_64
             wintun_arch: ''
           - target_os: linux
             goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm
             archive_suffix: .tar.gz
+            appimage_arch: aarch64
             wintun_arch: ''
           - target_os: macos
             goos: darwin
@@ -89,8 +91,10 @@ jobs:
       TARGET_OS: ${{ matrix.target_os }}
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
+      APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
       ARTIFACT_NAME: ${{ format('zju-connect-gui-{0}-{1}', matrix.target_os, matrix.goarch) }}
       ARCHIVE_PATH: ${{ format('dist/zju-connect-gui-{0}-{1}{2}', matrix.target_os, matrix.goarch, matrix.archive_suffix) }}
+      APPIMAGE_PATH: ${{ format('dist/zju-connect-gui-{0}-{1}.AppImage', matrix.target_os, matrix.goarch) }}
 
     steps:
       - name: Checkout repository
@@ -121,7 +125,7 @@ jobs:
         if: matrix.target_os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libgtk-3-bin libayatana-appindicator3-dev desktop-file-utils squashfs-tools
 
       - name: Build upstream zju-connect
         shell: bash
@@ -184,6 +188,15 @@ jobs:
           fi
           python scripts/package_ci_artifact.py "${args[@]}"
 
+      - name: Download linuxdeploy tooling
+        if: matrix.target_os == 'linux'
+        shell: bash
+        run: |
+          curl -fL "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${APPIMAGE_ARCH}.AppImage" -o "$RUNNER_TEMP/linuxdeploy-${APPIMAGE_ARCH}.AppImage"
+          curl -fL "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh" -o "$RUNNER_TEMP/linuxdeploy-plugin-gtk.sh"
+          chmod +x "$RUNNER_TEMP/linuxdeploy-${APPIMAGE_ARCH}.AppImage"
+          chmod +x "$RUNNER_TEMP/linuxdeploy-plugin-gtk.sh"
+
       - name: Create Linux archive
         if: matrix.target_os == 'linux'
         shell: bash
@@ -191,6 +204,34 @@ jobs:
           mkdir -p dist
           tar -C "$RUNNER_TEMP/stage" -czf "$ARCHIVE_PATH" "$ARTIFACT_NAME"
           test -f "$ARCHIVE_PATH"
+
+      - name: Create Linux AppImage
+        if: matrix.target_os == 'linux'
+        shell: bash
+        run: |
+          chmod +x scripts/build_linux_appimage.sh
+          scripts/build_linux_appimage.sh "$RUNNER_TEMP/stage/$ARTIFACT_NAME" "$GOARCH" "$ARTIFACT_NAME" "${GITHUB_SHA}-${GOARCH}" "$APPIMAGE_PATH"
+          test -f "$APPIMAGE_PATH"
+
+      - name: Smoke check Linux AppImage contents
+        if: matrix.target_os == 'linux'
+        shell: bash
+        run: |
+          smoke_dir="$RUNNER_TEMP/appimage-smoke-${GOARCH}"
+          rm -rf "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          cp "$APPIMAGE_PATH" "$smoke_dir/app.AppImage"
+          chmod +x "$smoke_dir/app.AppImage"
+          (
+            cd "$smoke_dir"
+            ./app.AppImage --appimage-extract >/dev/null
+            test -x squashfs-root/usr/bin/zju-connect-gui-launcher
+            test -f squashfs-root/usr/share/applications/zju-connect-gui.desktop
+            test -f squashfs-root/usr/share/icons/hicolor/512x512/apps/zju-connect-gui.png
+            test -x squashfs-root/usr/lib/zju-connect-gui/runtime/zju-connect-gui
+            test -x squashfs-root/usr/lib/zju-connect-gui/runtime/bin/zju-connect
+            test -f squashfs-root/usr/lib/zju-connect-gui/runtime/.bundle-stamp
+          )
 
       - name: Create macOS archive
         if: matrix.target_os == 'macos'
@@ -216,9 +257,21 @@ jobs:
           }
 
       - name: Upload packaged artifact
+        if: matrix.target_os != 'linux'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.ARCHIVE_PATH }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload packaged Linux artifacts
+        if: matrix.target_os == 'linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            ${{ env.ARCHIVE_PATH }}
+            ${{ env.APPIMAGE_PATH }}
           archive: false
           if-no-files-found: error
