@@ -273,5 +273,4 @@ jobs:
           path: |
             ${{ env.ARCHIVE_PATH }}
             ${{ env.APPIMAGE_PATH }}
-          archive: false
           if-no-files-found: error
