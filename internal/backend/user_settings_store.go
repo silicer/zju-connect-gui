@@ -31,6 +31,7 @@ func DefaultLaunchOptions() LaunchOptions {
 	defaults.AuthType = defaultAuthType
 	defaults.LoginDomain = defaultLoginDomain
 	defaults.ClientDataFile = defaultClientDataFile
+	defaults.EIPAutoOpen = defaultEIPAutoOpen
 	defaults.TunMode = true
 	return defaults
 }
@@ -52,6 +53,12 @@ func (s *UserSettingsStore) Load() (LaunchOptions, error) {
 	if err := json.Unmarshal(data, &options); err != nil {
 		return defaults, fmt.Errorf("failed to parse settings: %w", err)
 	}
+	var raw struct {
+		EIPAutoOpen *bool `json:"eipAutoOpen"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return defaults, fmt.Errorf("failed to parse settings: %w", err)
+	}
 
 	options = normalizeLaunchOptions(options)
 	options.Protocol = defaultProtocol
@@ -61,6 +68,9 @@ func (s *UserSettingsStore) Load() (LaunchOptions, error) {
 	options.AuthType = defaultAuthType
 	options.LoginDomain = defaultLoginDomain
 	options.ClientDataFile = defaultClientDataFile
+	if raw.EIPAutoOpen == nil {
+		options.EIPAutoOpen = defaultEIPAutoOpen
+	}
 
 	return options, nil
 }

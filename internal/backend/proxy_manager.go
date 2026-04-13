@@ -30,6 +30,7 @@ type ProxyManager struct {
 	awaiting         string
 	captchaPoll      bool
 	captchaPath      string
+	delayedEIPTimer  retryTimer
 	eipOpened        bool
 	eipOptions       LaunchOptions
 	elevated         bool
@@ -44,6 +45,7 @@ type ProxyManager struct {
 	retryBaseDelay   time.Duration
 	retryMaxDelay    time.Duration
 	afterFunc        func(time.Duration, func()) retryTimer
+	autoOpenDelay    func() time.Duration
 	retryJitter      func(time.Duration, int) time.Duration
 	startProcess     func(string, LaunchOptions) error
 	waitForHTTPReady func(string, uint64)
@@ -58,7 +60,8 @@ func NewProxyManager(appDir string) *ProxyManager {
 		afterFunc: func(delay time.Duration, fn func()) retryTimer {
 			return time.AfterFunc(delay, fn)
 		},
-		retryJitter: defaultRetryJitter,
+		autoOpenDelay: defaultEIPAutoOpenDelay,
+		retryJitter:   defaultRetryJitter,
 	}
 }
 
@@ -88,6 +91,7 @@ func (p *ProxyManager) Start(options LaunchOptions) error {
 	}
 	p.retryGeneration++
 	p.stopRetryTimerLocked()
+	p.stopDelayedEIPTimerLocked()
 	p.mu.Unlock()
 
 	captchaPath := filepath.Join(p.appDir, "gui_captcha.png")
@@ -146,6 +150,7 @@ func (p *ProxyManager) Stop() error {
 	pid := p.elevatedPID
 	p.retryGeneration++
 	p.stopRetryTimerLocked()
+	p.stopDelayedEIPTimerLocked()
 	p.sessionActive = false
 	p.retryAttempt = 0
 	p.ready = false

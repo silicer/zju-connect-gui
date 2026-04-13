@@ -44,6 +44,7 @@ func testLaunchOptions() LaunchOptions {
 	options := DefaultLaunchOptions()
 	options.Username = "student"
 	options.Password = "secret"
+	options.EIPAutoOpen = false
 	return options
 }
 
@@ -403,9 +404,10 @@ func TestNonTunStartWaitsForHTTPBindBeforeConnected(t *testing.T) {
 }
 
 func TestTunStartWaitsForAddRouteLogBeforeConnected(t *testing.T) {
-	p, _ := newTestProxyManager()
+	p, scheduled := newTestProxyManager()
 	options := testLaunchOptions()
 	options.TunMode = true
+	options.EIPAutoOpen = true
 	primeReconnectSession(p, options)
 
 	p.mu.Lock()
@@ -456,6 +458,10 @@ func TestTunStartWaitsForAddRouteLogBeforeConnected(t *testing.T) {
 		return nil
 	}
 	p.markReadyForGeneration(generation)
+	if len(*scheduled) != 1 {
+		t.Fatalf("expected 1 delayed EIP open schedule, got %d", len(*scheduled))
+	}
+	(*scheduled)[0].fn()
 	select {
 	case <-ready:
 	case <-time.After(time.Second):
@@ -535,9 +541,10 @@ func TestStaleHTTPReadyResultIgnoredAfterStop(t *testing.T) {
 }
 
 func TestMarkReadyOpensEIPOnlyOnce(t *testing.T) {
-	p, _ := newTestProxyManager()
+	p, scheduled := newTestProxyManager()
 	options := testLaunchOptions()
 	options.TunMode = true
+	options.EIPAutoOpen = true
 	primeReconnectSession(p, options)
 
 	var mu sync.Mutex
@@ -552,6 +559,10 @@ func TestMarkReadyOpensEIPOnlyOnce(t *testing.T) {
 	}
 
 	p.markReadyForGeneration(1)
+	if len(*scheduled) != 1 {
+		t.Fatalf("expected 1 delayed EIP open schedule, got %d", len(*scheduled))
+	}
+	(*scheduled)[0].fn()
 	select {
 	case <-opened:
 	case <-time.After(time.Second):
@@ -564,6 +575,136 @@ func TestMarkReadyOpensEIPOnlyOnce(t *testing.T) {
 	defer mu.Unlock()
 	if openCalls != 1 {
 		t.Fatalf("expected EIP to open once, got %d calls", openCalls)
+	}
+}
+
+func TestMarkReadyWithAutoOpenDisabledDoesNotScheduleOpen(t *testing.T) {
+	p, scheduled := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	options.EIPAutoOpen = false
+	primeReconnectSession(p, options)
+
+	p.openEIP = func(LaunchOptions) error {
+		t.Fatal("did not expect EIP open when auto-open disabled")
+		return nil
+	}
+
+	p.markReadyForGeneration(1)
+
+	if len(*scheduled) != 0 {
+		t.Fatalf("expected no delayed EIP open schedule, got %d", len(*scheduled))
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.ready {
+		t.Fatal("expected session ready even when EIP auto-open disabled")
+	}
+}
+
+func TestMarkReadySchedulesDelayedEIPOpen(t *testing.T) {
+	p, scheduled := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	options.EIPAutoOpen = true
+	primeReconnectSession(p, options)
+	p.autoOpenDelay = func() time.Duration {
+		return 4 * time.Second
+	}
+
+	openCalls := 0
+	p.openEIP = func(got LaunchOptions) error {
+		openCalls++
+		if !reflect.DeepEqual(got, options) {
+			t.Fatalf("unexpected delayed EIP options: %#v", got)
+		}
+		return nil
+	}
+
+	p.markReadyForGeneration(1)
+
+	if len(*scheduled) != 1 {
+		t.Fatalf("expected 1 delayed EIP open schedule, got %d", len(*scheduled))
+	}
+	if got := (*scheduled)[0].delay; got != 4*time.Second {
+		t.Fatalf("expected delayed EIP open after %s, got %s", 4*time.Second, got)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected delayed EIP open not to run before timer, got %d calls", openCalls)
+	}
+
+	(*scheduled)[0].fn()
+
+	if openCalls != 1 {
+		t.Fatalf("expected delayed EIP open to run once, got %d calls", openCalls)
+	}
+}
+
+func TestDelayedEIPOpenCanceledByStop(t *testing.T) {
+	p, scheduled := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	options.EIPAutoOpen = true
+	primeReconnectSession(p, options)
+	p.autoOpenDelay = func() time.Duration {
+		return 4 * time.Second
+	}
+
+	openCalls := 0
+	p.openEIP = func(LaunchOptions) error {
+		openCalls++
+		return nil
+	}
+
+	p.markReadyForGeneration(1)
+	if len(*scheduled) != 1 {
+		t.Fatalf("expected 1 delayed EIP open schedule, got %d", len(*scheduled))
+	}
+
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop() returned error: %v", err)
+	}
+	if !(*scheduled)[0].timer.stopped {
+		t.Fatal("expected Stop to cancel delayed EIP open timer")
+	}
+
+	(*scheduled)[0].fn()
+
+	if openCalls != 0 {
+		t.Fatalf("expected stopped session to suppress delayed EIP open, got %d calls", openCalls)
+	}
+}
+
+func TestDelayedEIPOpenCanceledAfterGenerationChange(t *testing.T) {
+	p, scheduled := newTestProxyManager()
+	options := testLaunchOptions()
+	options.TunMode = false
+	options.EIPAutoOpen = true
+	primeReconnectSession(p, options)
+	p.autoOpenDelay = func() time.Duration {
+		return 4 * time.Second
+	}
+
+	openCalls := 0
+	p.openEIP = func(LaunchOptions) error {
+		openCalls++
+		return nil
+	}
+
+	p.markReadyForGeneration(1)
+	if len(*scheduled) != 1 {
+		t.Fatalf("expected 1 delayed EIP open schedule, got %d", len(*scheduled))
+	}
+
+	p.handleProcessExit(errors.New("network lost"))
+	if !(*scheduled)[0].timer.stopped {
+		t.Fatal("expected generation change to cancel delayed EIP open timer")
+	}
+
+	(*scheduled)[0].fn()
+
+	if openCalls != 0 {
+		t.Fatalf("expected stale delayed EIP open to be ignored after generation change, got %d calls", openCalls)
 	}
 }
 

@@ -38,10 +38,14 @@ func TestNormalizeLaunchOptions_Defaults(t *testing.T) {
 	if options.ClientDataFile != defaultClientDataFile {
 		t.Fatalf("expected client-data-file %q, got %q", defaultClientDataFile, options.ClientDataFile)
 	}
+	if options.EIPAutoOpen {
+		t.Fatal("expected normalizeLaunchOptions not to force EIP auto-open without persisted default context")
+	}
 }
 
 func TestNormalizeLaunchOptions_EIPBrowserFields(t *testing.T) {
 	options := normalizeLaunchOptions(LaunchOptions{
+		EIPAutoOpen:       false,
 		Username:          "user1",
 		Password:          "pass1",
 		EIPBrowserProgram: "  /usr/bin/browser  ",
@@ -50,6 +54,9 @@ func TestNormalizeLaunchOptions_EIPBrowserFields(t *testing.T) {
 
 	if options.EIPBrowserProgram != "/usr/bin/browser" {
 		t.Fatalf("expected trimmed browser program, got %q", options.EIPBrowserProgram)
+	}
+	if options.EIPAutoOpen {
+		t.Fatal("expected explicit EIP auto-open setting to be preserved")
 	}
 	if len(options.EIPBrowserArgs) != 2 {
 		t.Fatalf("expected 2 normalized browser args, got %#v", options.EIPBrowserArgs)

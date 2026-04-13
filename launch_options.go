@@ -14,6 +14,7 @@ type LaunchOptions struct {
 	AuthType           string   `json:"authType"`
 	LoginDomain        string   `json:"loginDomain"`
 	ClientDataFile     string   `json:"clientDataFile"`
+	EIPAutoOpen        bool     `json:"eipAutoOpen"`
 	EIPBrowserProgram  string   `json:"eipBrowserProgram"`
 	EIPBrowserArgs     []string `json:"eipBrowserArgs"`
 	TunMode            bool     `json:"tunMode"`
@@ -33,6 +34,7 @@ func (o LaunchOptions) toBackend() backend.LaunchOptions {
 		AuthType:           o.AuthType,
 		LoginDomain:        o.LoginDomain,
 		ClientDataFile:     o.ClientDataFile,
+		EIPAutoOpen:        o.EIPAutoOpen,
 		EIPBrowserProgram:  o.EIPBrowserProgram,
 		EIPBrowserArgs:     append([]string(nil), o.EIPBrowserArgs...),
 		TunMode:            o.TunMode,
@@ -53,6 +55,7 @@ func launchOptionsFromBackend(options backend.LaunchOptions) LaunchOptions {
 		AuthType:           options.AuthType,
 		LoginDomain:        options.LoginDomain,
 		ClientDataFile:     options.ClientDataFile,
+		EIPAutoOpen:        options.EIPAutoOpen,
 		EIPBrowserProgram:  options.EIPBrowserProgram,
 		EIPBrowserArgs:     append([]string(nil), options.EIPBrowserArgs...),
 		TunMode:            options.TunMode,

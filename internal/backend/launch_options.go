@@ -17,6 +17,7 @@ const (
 	defaultAuthType           = "auth/psw"
 	defaultLoginDomain        = "AD"
 	defaultClientDataFile     = "client_data.json"
+	defaultEIPAutoOpen        = true
 )
 
 var supportedProtocols = map[string]struct{}{
@@ -36,6 +37,7 @@ type LaunchOptions struct {
 	AuthType           string   `json:"authType"`
 	LoginDomain        string   `json:"loginDomain"`
 	ClientDataFile     string   `json:"clientDataFile"`
+	EIPAutoOpen        bool     `json:"eipAutoOpen"`
 	EIPBrowserProgram  string   `json:"eipBrowserProgram"`
 	EIPBrowserArgs     []string `json:"eipBrowserArgs"`
 	TunMode            bool     `json:"tunMode"`
