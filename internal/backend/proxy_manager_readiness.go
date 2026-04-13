@@ -2,11 +2,20 @@ package backend
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"time"
 )
 
-const httpReadyPollInterval = 100 * time.Millisecond
+const (
+	httpReadyPollInterval = 100 * time.Millisecond
+	minEIPAutoOpenDelay   = 3 * time.Second
+	maxEIPAutoOpenDelay   = 5 * time.Second
+)
+
+func defaultEIPAutoOpenDelay() time.Duration {
+	return time.Duration(3+rand.Intn(3)) * time.Second
+}
 
 func (p *ProxyManager) readinessMode() (bool, string) {
 	p.mu.Lock()
@@ -57,28 +66,71 @@ func (p *ProxyManager) shouldContinueReadyWait(generation uint64) bool {
 	return p.sessionActive && !p.ready && p.retryGeneration == generation && p.readyWaitGen == generation
 }
 
+func (p *ProxyManager) stopDelayedEIPTimerLocked() {
+	if p.delayedEIPTimer == nil {
+		return
+	}
+	p.delayedEIPTimer.Stop()
+	p.delayedEIPTimer = nil
+}
+
 func (p *ProxyManager) openEIPURLOnce() {
 	p.mu.Lock()
-	if p.eipOpened {
+	if p.eipOpened || !p.eipOptions.EIPAutoOpen {
 		p.mu.Unlock()
 		return
 	}
 	options := p.eipOptions
-	openEIP := p.openEIP
+	generation := p.retryGeneration
+	afterFunc := p.afterFunc
+	delayFn := p.autoOpenDelay
+	if afterFunc == nil {
+		afterFunc = func(delay time.Duration, fn func()) retryTimer {
+			return time.AfterFunc(delay, fn)
+		}
+	}
+	if delayFn == nil {
+		delayFn = defaultEIPAutoOpenDelay
+	}
+	delay := delayFn()
+	if delay < minEIPAutoOpenDelay {
+		delay = minEIPAutoOpenDelay
+	}
+	if delay > maxEIPAutoOpenDelay {
+		delay = maxEIPAutoOpenDelay
+	}
+	p.stopDelayedEIPTimerLocked()
 	p.eipOpened = true
+	p.delayedEIPTimer = afterFunc(delay, func() {
+		p.openDelayedEIPURLForGeneration(generation, options)
+	})
 	p.mu.Unlock()
+}
+
+func (p *ProxyManager) openDelayedEIPURLForGeneration(generation uint64, options LaunchOptions) {
+	p.mu.Lock()
+	if p.retryGeneration != generation || !p.sessionActive || !p.ready {
+		if p.retryGeneration == generation {
+			p.delayedEIPTimer = nil
+		}
+		p.mu.Unlock()
+		return
+	}
+	openEIP := p.openEIP
 	if openEIP == nil {
 		openEIP = OpenEIP
 	}
-
-	go func() {
-		if err := openEIP(options); err != nil {
-			p.mu.Lock()
+	p.delayedEIPTimer = nil
+	err := openEIP(options)
+	if err != nil {
+		if p.retryGeneration == generation && p.sessionActive && p.ready {
 			p.eipOpened = false
-			p.mu.Unlock()
-			p.emit("log", fmt.Sprintf("[eip] failed to open EIP URL: %v", err))
 		}
-	}()
+		p.mu.Unlock()
+		p.emit("log", fmt.Sprintf("[eip] failed to open EIP URL: %v", err))
+		return
+	}
+	p.mu.Unlock()
 }
 
 func (p *ProxyManager) markReady() {

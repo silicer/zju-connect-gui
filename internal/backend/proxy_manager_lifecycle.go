@@ -87,6 +87,8 @@ func (p *ProxyManager) startManaged(captchaPath string, options LaunchOptions) e
 func (p *ProxyManager) handleProcessExit(waitErr error) {
 	p.mu.Lock()
 	if !p.sessionActive {
+		p.stopDelayedEIPTimerLocked()
+		p.eipOpened = false
 		p.ready = false
 		p.readyWaitGen = 0
 		p.retryAttempt = 0
@@ -97,6 +99,8 @@ func (p *ProxyManager) handleProcessExit(waitErr error) {
 	if p.awaiting != "" {
 		blockedReason := p.awaiting
 		p.sessionActive = false
+		p.stopDelayedEIPTimerLocked()
+		p.eipOpened = false
 		p.ready = false
 		p.readyWaitGen = 0
 		p.retryAttempt = 0
@@ -107,6 +111,8 @@ func (p *ProxyManager) handleProcessExit(waitErr error) {
 		p.emitStateWithDetails("stopped", fmt.Sprintf("连接在等待 %s 时中断，请手动重新连接", blockedReason), 0, 0)
 		return
 	}
+	p.stopDelayedEIPTimerLocked()
+	p.eipOpened = false
 	p.ready = false
 	p.retryGeneration++
 
