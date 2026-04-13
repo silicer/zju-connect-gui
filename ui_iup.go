@@ -83,6 +83,7 @@ type iupUI struct {
 	inputPromptLabel iup.Ihandle
 	inputText        iup.Ihandle
 	inputMultiline   iup.Ihandle
+	inputSwitcher    iup.Ihandle
 	inputSubmit      iup.Ihandle
 	inputMode        inputDialogMode
 
@@ -320,14 +321,8 @@ func (ui *iupUI) build() error {
 func (ui *iupUI) buildInputDialog() {
 	ui.inputPromptLabel = iup.Label("请输入内容")
 	ui.inputText = iup.Text().SetAttributes(`EXPAND=HORIZONTAL`)
-	ui.inputText.SetCallback("ACTION", iup.TextActionFunc(func(ih iup.Ihandle, c int, _ string) int {
-		if ui.inputMode == inputDialogModeSMS && c == 13 {
-			ui.submitInputDialog()
-			return iup.IGNORE
-		}
-		return iup.DEFAULT
-	}))
 	ui.inputMultiline = iup.MultiLine().SetAttributes(`VISIBLELINES=6, EXPAND=YES`)
+	ui.inputSwitcher = iup.Zbox(ui.inputText, ui.inputMultiline).SetAttributes(`CHILDSIZEALL=NO, EXPAND=YES`)
 	cancel := iup.Button("取消")
 	cancel.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.inputDialog)
@@ -340,14 +335,14 @@ func (ui *iupUI) buildInputDialog() {
 	}))
 	body := iup.Vbox(
 		ui.inputPromptLabel,
-		ui.inputText,
-		ui.inputMultiline,
+		ui.inputSwitcher,
 		iup.Hbox(iup.Fill(), cancel, ui.inputSubmit).SetAttribute("GAP", "6"),
 	).SetAttributes(`GAP=8, MARGIN=10x10`)
 	ui.inputDialog = iup.Dialog(body).SetAttributes(fmt.Sprintf(`TITLE="输入需求", RASTERSIZE=%s, MINSIZE=%s`, inputDialogGenericRasterSize, inputDialogGenericMinSize))
 	if ui.appIcon != 0 {
 		iup.SetAttributeHandle(ui.inputDialog, "ICON", ui.appIcon)
 	}
+	iup.SetAttributeHandle(ui.inputDialog, "DEFAULTESC", cancel)
 	ui.applyInputDialogLayout(inputDialogModeGeneric)
 	ui.inputDialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		iup.Hide(ui.inputDialog)
@@ -791,13 +786,13 @@ func (ui *iupUI) flushPendingLogs() {
 
 func (ui *iupUI) applyInputDialogLayout(mode inputDialogMode) {
 	if mode == inputDialogModeSMS {
-		ui.inputText.SetAttribute("VISIBLE", "YES")
-		ui.inputMultiline.SetAttribute("VISIBLE", "NO")
+		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputText)
+		iup.SetAttributeHandle(ui.inputDialog, "DEFAULTENTER", ui.inputSubmit)
 		ui.inputDialog.SetAttribute("RASTERSIZE", inputDialogSMSRasterSize)
 		ui.inputDialog.SetAttribute("MINSIZE", inputDialogSMSMinSize)
 	} else {
-		ui.inputText.SetAttribute("VISIBLE", "NO")
-		ui.inputMultiline.SetAttribute("VISIBLE", "YES")
+		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputMultiline)
+		ui.inputDialog.SetAttribute("DEFAULTENTER", nil)
 		ui.inputDialog.SetAttribute("RASTERSIZE", inputDialogGenericRasterSize)
 		ui.inputDialog.SetAttribute("MINSIZE", inputDialogGenericMinSize)
 	}
