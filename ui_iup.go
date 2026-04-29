@@ -199,7 +199,7 @@ func (ui *iupUI) build() error {
 	ui.eipAutoOpenToggle = iup.Toggle("连接后打开浏览器")
 	ui.autoScrollToggle = iup.Toggle("自动滚动")
 	ui.autoScrollToggle.SetAttribute("VALUE", "ON")
-	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=18, VISIBLECOLUMNS=80, FONT="Monospace, 10"`)
+	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=12, VISIBLECOLUMNS=60, FONT="Monospace, 10"`)
 	ui.startStopButton = iup.Button("开始连接")
 	ui.startStopButton.SetAttributes(`PADDING=24x12, FONTSTYLE=BOLD`)
 	ui.startStopButton.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
@@ -282,7 +282,7 @@ func (ui *iupUI) build() error {
 		tabs,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
-	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", RASTERSIZE=1248x1160, MINSIZE=1248x1160`)
+	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", MINSIZE=600x400`)
 	iup.SetAttributeHandle(ui.dialog, "ICON", ui.appIcon)
 	ui.dialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		if stdRuntime.GOOS == "darwin" {
@@ -803,6 +803,17 @@ func (ui *iupUI) applyInputDialogLayout(mode inputDialogMode) {
 }
 
 func (ui *iupUI) showMainDialog() {
+	currentRaster := ui.dialog.GetAttribute("RASTERSIZE")
+	if currentRaster == "" {
+		iup.Refresh(ui.dialog)
+		currentRaster = ui.dialog.GetAttribute("RASTERSIZE")
+	}
+	screenSize := iup.GetGlobal("SCREENSIZE")
+
+	clampedSize := clampDialogSize(currentRaster, screenSize, 600, 400)
+	if clampedSize != currentRaster {
+		ui.dialog.SetAttribute("RASTERSIZE", clampedSize)
+	}
 	ui.dialog.SetAttribute("LOCKLOOP", "NO")
 	ui.dialog.SetAttribute("HIDETASKBAR", "NO")
 	ui.dialog.SetAttribute("STATE", "RESTORE")
