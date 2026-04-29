@@ -265,11 +265,14 @@ func (ui *iupUI) build() error {
 		configFields,
 	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL, MARGIN=10x10`)
 
+	// Create the scrollbox for config fields. We need it to NOT force its natural size on the parent
+	// otherwise it expands the dialog and hides the bottom button row.
+	// We allow the scrollbox to absorb the overflow and provide a scrollbar.
+	configScrollBox := iup.ScrollBox(configBody).SetAttributes(`EXPAND=YES, SCROLLBAR=VERTICAL`)
 	configTab := iup.Vbox(
-		iup.ScrollBox(configBody).SetAttribute("EXPAND", "YES"),
+		configScrollBox,
 		iup.Hbox(iup.Fill(), ui.startStopButton).SetAttributes(`GAP=6, MARGIN=10x0`),
 	).SetAttributes(`TABTITLE="配置", GAP=8, MARGIN=0x0, EXPAND=YES`)
-
 	logsTab := iup.Vbox(
 		iup.Hbox(ui.autoScrollToggle, clearLogsButton, iup.Fill()).SetAttribute("GAP", "6"),
 		ui.logArea,
@@ -811,6 +814,9 @@ func (ui *iupUI) showMainDialog() {
 	screenSize := iup.GetGlobal("SCREENSIZE")
 
 	clampedSize := clampDialogSize(currentRaster, screenSize, 600, 400)
+	// If the dialog needs to be clamped to fit the screen, or if it's the first show,
+	// we want to force RASTERSIZE so the scrollbox knows its limits instead of expanding
+	// to fit its content indefinitely.
 	if clampedSize != currentRaster {
 		ui.dialog.SetAttribute("RASTERSIZE", clampedSize)
 	}
@@ -818,6 +824,10 @@ func (ui *iupUI) showMainDialog() {
 	ui.dialog.SetAttribute("HIDETASKBAR", "NO")
 	ui.dialog.SetAttribute("STATE", "RESTORE")
 	iup.Show(ui.dialog)
+
+	// Force refresh after show to ensure scrollbars calculate bounds correctly
+	// against the clamped actual window size. IUP scrollbox often needs this.
+	iup.Refresh(ui.dialog)
 }
 
 func (ui *iupUI) hideMainDialogToTray() {
