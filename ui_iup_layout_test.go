@@ -38,11 +38,11 @@ func TestInitialDialogRasterSize(t *testing.T) {
 		minW, minH int
 		expected   string
 	}{
-		{"natural fits screen", "952x486", "1920x1080", 600, 400, ""},
+		{"natural fits screen", "952x486", "1920x1080", 600, 400, "952x486"},
 		{"natural exceeds height", "952x1200", "1920x1080", 600, 400, "952x952"},
 		{"natural exceeds both", "2000x1200", "1920x1080", 600, 400, "1856x952"},
 		{"invalid natural size", "", "1920x1080", 600, 400, ""},
-		{"invalid screen size", "952x486", "bad", 600, 400, ""},
+		{"invalid screen size", "952x486", "bad", 600, 400, "952x486"},
 	}
 
 	for _, tt := range tests {

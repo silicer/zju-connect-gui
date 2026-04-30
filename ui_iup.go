@@ -867,9 +867,9 @@ func debugHandleSnapshot(name string, ih iup.Ihandle) string {
 	)
 }
 
-func (ui *iupUI) traceMainLayout(stage string, screenSize string, currentRaster string, clampedSize string, clampDisabled bool) {
+func (ui *iupUI) traceMainLayout(stage string, screenSize string, currentRaster string, initialRaster string, clampDisabled bool) {
 	ui.appendDebugLogs(
-		fmt.Sprintf("[layout-debug] stage=%s screen=%q currentRaster=%q clampedSize=%q clampDisabled=%t", stage, screenSize, currentRaster, clampedSize, clampDisabled),
+		fmt.Sprintf("[layout-debug] stage=%s screen=%q currentRaster=%q initialRaster=%q clampDisabled=%t", stage, screenSize, currentRaster, initialRaster, clampDisabled),
 		debugHandleSnapshot("dialog", ui.dialog),
 		debugHandleSnapshot("root", ui.root),
 		debugHandleSnapshot("tabs", ui.tabs),
@@ -908,13 +908,13 @@ func (ui *iupUI) showMainDialog() {
 	screenSize := iup.GetGlobal("SCREENSIZE")
 	clampDisabled := envFlagEnabled(mainClampEnv)
 
-	clampedSize := ""
+	initialRaster := naturalRaster
 	if !clampDisabled {
-		clampedSize = initialDialogRasterSize(naturalRaster, screenSize, 600, 400)
+		initialRaster = initialDialogRasterSize(naturalRaster, screenSize, 600, 400)
 	}
-	ui.traceMainLayout("before-show", screenSize, currentRaster, clampedSize, clampDisabled)
-	if !clampDisabled && clampedSize != "" {
-		ui.dialog.SetAttribute("RASTERSIZE", clampedSize)
+	ui.traceMainLayout("before-show", screenSize, currentRaster, initialRaster, clampDisabled)
+	if initialRaster != "" {
+		ui.dialog.SetAttribute("RASTERSIZE", initialRaster)
 	}
 	ui.dialog.SetAttribute("LOCKLOOP", "NO")
 	ui.dialog.SetAttribute("HIDETASKBAR", "NO")
@@ -922,10 +922,10 @@ func (ui *iupUI) showMainDialog() {
 	iup.Show(ui.dialog)
 
 	iup.Refresh(ui.dialog)
-	if !clampDisabled && clampedSize != "" {
+	if initialRaster != "" {
 		ui.dialog.SetAttribute("RASTERSIZE", nil)
 	}
-	ui.traceMainLayout("after-show", screenSize, ui.dialog.GetAttribute("RASTERSIZE"), clampedSize, clampDisabled)
+	ui.traceMainLayout("after-show", screenSize, ui.dialog.GetAttribute("RASTERSIZE"), initialRaster, clampDisabled)
 }
 
 func (ui *iupUI) hideMainDialogToTray() {

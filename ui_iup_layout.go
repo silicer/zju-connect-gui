@@ -51,11 +51,11 @@ func initialDialogRasterSize(naturalRasterSize string, screenRasterSize string, 
 	}
 
 	clampedSize := clampDialogSize(naturalRasterSize, screenRasterSize, minW, minH)
-	if clampedSize == naturalRasterSize {
-		return ""
+	if clampedSize != naturalRasterSize {
+		return clampedSize
 	}
 
-	return clampedSize
+	return naturalRasterSize
 }
 
 func parseSize(s string) (int, int) {
