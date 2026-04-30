@@ -900,23 +900,20 @@ func (ui *iupUI) applyInputDialogLayout(mode inputDialogMode) {
 }
 
 func (ui *iupUI) showMainDialog() {
+	ui.dialog.SetAttribute("RASTERSIZE", nil)
+	iup.Refresh(ui.dialog)
+
+	naturalRaster := ui.dialog.GetAttribute("NATURALSIZE")
 	currentRaster := ui.dialog.GetAttribute("RASTERSIZE")
-	if currentRaster == "" {
-		iup.Refresh(ui.dialog)
-		currentRaster = ui.dialog.GetAttribute("RASTERSIZE")
-	}
 	screenSize := iup.GetGlobal("SCREENSIZE")
 	clampDisabled := envFlagEnabled(mainClampEnv)
 
-	clampedSize := currentRaster
+	clampedSize := ""
 	if !clampDisabled {
-		clampedSize = clampDialogSize(currentRaster, screenSize, 600, 400)
+		clampedSize = initialDialogRasterSize(naturalRaster, screenSize, 600, 400)
 	}
 	ui.traceMainLayout("before-show", screenSize, currentRaster, clampedSize, clampDisabled)
-	// If the dialog needs to be clamped to fit the screen, or if it's the first show,
-	// we want to force RASTERSIZE so the scrollbox knows its limits instead of expanding
-	// to fit its content indefinitely.
-	if !clampDisabled && clampedSize != currentRaster {
+	if !clampDisabled && clampedSize != "" {
 		ui.dialog.SetAttribute("RASTERSIZE", clampedSize)
 	}
 	ui.dialog.SetAttribute("LOCKLOOP", "NO")
@@ -924,10 +921,11 @@ func (ui *iupUI) showMainDialog() {
 	ui.dialog.SetAttribute("STATE", "RESTORE")
 	iup.Show(ui.dialog)
 
-	// Force refresh after show to ensure scrollbars calculate bounds correctly
-	// against the clamped actual window size. IUP scrollbox often needs this.
 	iup.Refresh(ui.dialog)
-	ui.traceMainLayout("after-show", screenSize, ui.dialog.GetAttribute("RASTERSIZE"), ui.dialog.GetAttribute("RASTERSIZE"), clampDisabled)
+	if !clampDisabled && clampedSize != "" {
+		ui.dialog.SetAttribute("RASTERSIZE", nil)
+	}
+	ui.traceMainLayout("after-show", screenSize, ui.dialog.GetAttribute("RASTERSIZE"), clampedSize, clampDisabled)
 }
 
 func (ui *iupUI) hideMainDialogToTray() {

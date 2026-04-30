@@ -44,6 +44,20 @@ func clampDialogSize(dialogRasterSize string, screenRasterSize string, minW, min
 	return fmt.Sprintf("%dx%d", targetW, targetH)
 }
 
+func initialDialogRasterSize(naturalRasterSize string, screenRasterSize string, minW, minH int) string {
+	naturalW, naturalH := parseSize(naturalRasterSize)
+	if naturalW <= 0 || naturalH <= 0 {
+		return ""
+	}
+
+	clampedSize := clampDialogSize(naturalRasterSize, screenRasterSize, minW, minH)
+	if clampedSize == naturalRasterSize {
+		return ""
+	}
+
+	return clampedSize
+}
+
 func parseSize(s string) (int, int) {
 	parts := strings.Split(s, "x")
 	if len(parts) != 2 {

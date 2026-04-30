@@ -29,3 +29,28 @@ func TestClampDialogSize(t *testing.T) {
 		})
 	}
 }
+
+func TestInitialDialogRasterSize(t *testing.T) {
+	tests := []struct {
+		name       string
+		natural    string
+		screen     string
+		minW, minH int
+		expected   string
+	}{
+		{"natural fits screen", "952x486", "1920x1080", 600, 400, ""},
+		{"natural exceeds height", "952x1200", "1920x1080", 600, 400, "952x952"},
+		{"natural exceeds both", "2000x1200", "1920x1080", 600, 400, "1856x952"},
+		{"invalid natural size", "", "1920x1080", 600, 400, ""},
+		{"invalid screen size", "952x486", "bad", 600, 400, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := initialDialogRasterSize(tt.natural, tt.screen, tt.minW, tt.minH)
+			if got != tt.expected {
+				t.Errorf("initialDialogRasterSize(%q, %q, %d, %d) = %q; want %q", tt.natural, tt.screen, tt.minW, tt.minH, got, tt.expected)
+			}
+		})
+	}
+}
