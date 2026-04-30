@@ -9,6 +9,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"math"
+	"os"
 	"reflect"
 	stdRuntime "runtime"
 	"strconv"
@@ -25,6 +26,8 @@ const (
 	autosaveTimerMs = 250
 	maxLogEntries   = 1000
 	captchaHandle   = "zju_connect_gui_captcha"
+	layoutDebugEnv  = "ZJU_CONNECT_GUI_DEBUG_LAYOUT"
+	mainClampEnv    = "ZJU_CONNECT_GUI_DISABLE_MAIN_CLAMP"
 
 	captchaPreviewWidth  = 720
 	captchaPreviewHeight = 420
@@ -66,6 +69,13 @@ type iupUI struct {
 	autoScrollToggle iup.Ihandle
 	startStopButton  iup.Ihandle
 	appIcon          iup.Ihandle
+	root             iup.Ihandle
+	tabs             iup.Ihandle
+	configTab        iup.Ihandle
+	logsTab          iup.Ihandle
+	configScrollBox  iup.Ihandle
+	configBody       iup.Ihandle
+	footerRow        iup.Ihandle
 
 	usernameInput     iup.Ihandle
 	passwordInput     iup.Ihandle
@@ -262,7 +272,7 @@ func (ui *iupUI) build() error {
 		toggleField("调试模式", ui.debugDumpToggle, 0),
 	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL`)
 
-	configBody := iup.Vbox(
+	ui.configBody = iup.Vbox(
 		iup.Label("按需填写账号、本地代理监听地址和 EIP 打开方式即可。"),
 		configFields,
 	).SetAttributes(`GAP=10, EXPAND=HORIZONTAL, MARGIN=10x10`)
@@ -270,43 +280,42 @@ func (ui *iupUI) build() error {
 	// Create the scrollbox for config fields. We need it to NOT force its natural size on the parent
 	// otherwise it expands the dialog and hides the bottom button row.
 	// We allow the scrollbox to absorb the overflow and provide a scrollbar.
-	configScrollBox := iup.ScrollBox(configBody).SetAttributes(`EXPAND=YES, SCROLLBAR=VERTICAL`)
-	configTab := iup.Vbox(
-		configScrollBox,
+	ui.configScrollBox = iup.ScrollBox(ui.configBody).SetAttributes(`EXPAND=YES, SCROLLBAR=VERTICAL`)
+	ui.configTab = iup.Vbox(
+		ui.configScrollBox,
 	).SetAttributes(`TABTITLE="配置", GAP=8, MARGIN=0x0, EXPAND=YES`)
-	logsTab := iup.Vbox(
+	ui.logsTab = iup.Vbox(
 		iup.Hbox(ui.autoScrollToggle, clearLogsButton, iup.Fill()).SetAttribute("GAP", "6"),
 		ui.logArea,
 	).SetAttributes(`TABTITLE="日志", GAP=8, MARGIN=10x10`)
 
-	tabs := iup.Tabs(configTab, logsTab).SetAttributes(`EXPAND=YES`)
+	ui.tabs = iup.Tabs(ui.configTab, ui.logsTab).SetAttributes(`EXPAND=YES`)
 
-	footerRow := iup.Hbox(iup.Fill(), ui.startStopButton).SetAttributes(`GAP=6, MARGIN=0x0`)
+	ui.footerRow = iup.Hbox(iup.Fill(), ui.startStopButton).SetAttributes(`GAP=6, MARGIN=0x0`)
 
-	var root iup.Ihandle
-	tabs.SetCallback("TABCHANGE_CB", iup.TabChangeFunc(func(ih iup.Ihandle, newTab iup.Ihandle, oldTab iup.Ihandle) int {
+	ui.tabs.SetCallback("TABCHANGE_CB", iup.TabChangeFunc(func(ih iup.Ihandle, newTab iup.Ihandle, oldTab iup.Ihandle) int {
 		if newTab.GetAttribute("TABTITLE") == "配置" {
-			footerRow.SetAttribute("VISIBLE", "YES")
+			ui.footerRow.SetAttribute("VISIBLE", "YES")
 			// restore to full height of parent
-			footerRow.SetAttribute("FLOATING", "NO")
+			ui.footerRow.SetAttribute("FLOATING", "NO")
 		} else {
-			footerRow.SetAttribute("VISIBLE", "NO")
+			ui.footerRow.SetAttribute("VISIBLE", "NO")
 			// keep it from affecting layout height while hidden
-			footerRow.SetAttribute("FLOATING", "IGNORE")
+			ui.footerRow.SetAttribute("FLOATING", "IGNORE")
 		}
-		if root != 0 {
-			iup.Refresh(root)
+		if ui.root != 0 {
+			iup.Refresh(ui.root)
 		}
 		return iup.DEFAULT
 	}))
 
-	root = iup.Vbox(
+	ui.root = iup.Vbox(
 		ui.statusLabel,
-		tabs,
-		footerRow,
+		ui.tabs,
+		ui.footerRow,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
-	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", MINSIZE=600x400`)
+	ui.dialog = iup.Dialog(ui.root).SetAttributes(`TITLE="ZJU Connect GUI", MINSIZE=600x400`)
 	iup.SetAttributeHandle(ui.dialog, "ICON", ui.appIcon)
 	ui.dialog.SetCallback("CLOSE_CB", iup.CloseFunc(func(iup.Ihandle) int {
 		if stdRuntime.GOOS == "darwin" {
@@ -810,6 +819,70 @@ func (ui *iupUI) flushPendingLogs() {
 	ui.appendLogs(lines)
 }
 
+func envFlagEnabled(name string) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	switch raw {
+	case "", "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func (ui *iupUI) appendDebugLogs(lines ...string) {
+	if !envFlagEnabled(layoutDebugEnv) || len(lines) == 0 {
+		return
+	}
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	for _, line := range filtered {
+		fmt.Println(line)
+	}
+	ui.appendLogs(filtered)
+}
+
+func debugHandleSnapshot(name string, ih iup.Ihandle) string {
+	if ih == 0 {
+		return fmt.Sprintf("[layout-debug] %s <nil>", name)
+	}
+	return fmt.Sprintf(
+		"[layout-debug] %s NATURALSIZE=%q RASTERSIZE=%q CLIENTSIZE=%q VISIBLE=%q FLOATING=%q EXPAND=%q TABTITLE=%q",
+		name,
+		ih.GetAttribute("NATURALSIZE"),
+		ih.GetAttribute("RASTERSIZE"),
+		ih.GetAttribute("CLIENTSIZE"),
+		ih.GetAttribute("VISIBLE"),
+		ih.GetAttribute("FLOATING"),
+		ih.GetAttribute("EXPAND"),
+		ih.GetAttribute("TABTITLE"),
+	)
+}
+
+func (ui *iupUI) traceMainLayout(stage string, screenSize string, currentRaster string, clampedSize string, clampDisabled bool) {
+	ui.appendDebugLogs(
+		fmt.Sprintf("[layout-debug] stage=%s screen=%q currentRaster=%q clampedSize=%q clampDisabled=%t", stage, screenSize, currentRaster, clampedSize, clampDisabled),
+		debugHandleSnapshot("dialog", ui.dialog),
+		debugHandleSnapshot("root", ui.root),
+		debugHandleSnapshot("tabs", ui.tabs),
+		debugHandleSnapshot("configTab", ui.configTab),
+		debugHandleSnapshot("logsTab", ui.logsTab),
+		debugHandleSnapshot("configScrollBox", ui.configScrollBox),
+		debugHandleSnapshot("configBody", ui.configBody),
+		debugHandleSnapshot("footerRow", ui.footerRow),
+		debugHandleSnapshot("startStopButton", ui.startStopButton),
+		debugHandleSnapshot("logArea", ui.logArea),
+	)
+}
+
 func (ui *iupUI) applyInputDialogLayout(mode inputDialogMode) {
 	if mode == inputDialogModeSMS {
 		iup.SetAttributeHandle(ui.inputSwitcher, "VALUE_HANDLE", ui.inputText)
@@ -833,12 +906,17 @@ func (ui *iupUI) showMainDialog() {
 		currentRaster = ui.dialog.GetAttribute("RASTERSIZE")
 	}
 	screenSize := iup.GetGlobal("SCREENSIZE")
+	clampDisabled := envFlagEnabled(mainClampEnv)
 
-	clampedSize := clampDialogSize(currentRaster, screenSize, 600, 400)
+	clampedSize := currentRaster
+	if !clampDisabled {
+		clampedSize = clampDialogSize(currentRaster, screenSize, 600, 400)
+	}
+	ui.traceMainLayout("before-show", screenSize, currentRaster, clampedSize, clampDisabled)
 	// If the dialog needs to be clamped to fit the screen, or if it's the first show,
 	// we want to force RASTERSIZE so the scrollbox knows its limits instead of expanding
 	// to fit its content indefinitely.
-	if clampedSize != currentRaster {
+	if !clampDisabled && clampedSize != currentRaster {
 		ui.dialog.SetAttribute("RASTERSIZE", clampedSize)
 	}
 	ui.dialog.SetAttribute("LOCKLOOP", "NO")
@@ -849,6 +927,7 @@ func (ui *iupUI) showMainDialog() {
 	// Force refresh after show to ensure scrollbars calculate bounds correctly
 	// against the clamped actual window size. IUP scrollbox often needs this.
 	iup.Refresh(ui.dialog)
+	ui.traceMainLayout("after-show", screenSize, ui.dialog.GetAttribute("RASTERSIZE"), ui.dialog.GetAttribute("RASTERSIZE"), clampDisabled)
 }
 
 func (ui *iupUI) hideMainDialogToTray() {
