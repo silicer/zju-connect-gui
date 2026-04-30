@@ -199,7 +199,9 @@ func (ui *iupUI) build() error {
 	ui.eipAutoOpenToggle = iup.Toggle("连接后打开浏览器")
 	ui.autoScrollToggle = iup.Toggle("自动滚动")
 	ui.autoScrollToggle.SetAttribute("VALUE", "ON")
-	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=12, VISIBLECOLUMNS=60, FONT="Monospace, 10"`)
+	// We lower VISIBLELINES from 12 to 5 so logsTab doesn't force a huge minimum height for the whole app window
+	// while still providing a sensible default size before EXPAND takes over.
+	ui.logArea = iup.MultiLine().SetAttributes(`EXPAND=YES, READONLY=YES, MULTILINE=YES, VISIBLELINES=5, VISIBLECOLUMNS=60, FONT="Monospace, 10"`)
 	ui.startStopButton = iup.Button("开始连接")
 	ui.startStopButton.SetAttributes(`PADDING=24x12, FONTSTYLE=BOLD`)
 	ui.startStopButton.SetCallback("ACTION", iup.ActionFunc(func(iup.Ihandle) int {
@@ -271,7 +273,6 @@ func (ui *iupUI) build() error {
 	configScrollBox := iup.ScrollBox(configBody).SetAttributes(`EXPAND=YES, SCROLLBAR=VERTICAL`)
 	configTab := iup.Vbox(
 		configScrollBox,
-		iup.Hbox(iup.Fill(), ui.startStopButton).SetAttributes(`GAP=6, MARGIN=10x0`),
 	).SetAttributes(`TABTITLE="配置", GAP=8, MARGIN=0x0, EXPAND=YES`)
 	logsTab := iup.Vbox(
 		iup.Hbox(ui.autoScrollToggle, clearLogsButton, iup.Fill()).SetAttribute("GAP", "6"),
@@ -280,9 +281,29 @@ func (ui *iupUI) build() error {
 
 	tabs := iup.Tabs(configTab, logsTab).SetAttributes(`EXPAND=YES`)
 
-	root := iup.Vbox(
+	footerRow := iup.Hbox(iup.Fill(), ui.startStopButton).SetAttributes(`GAP=6, MARGIN=0x0`)
+
+	var root iup.Ihandle
+	tabs.SetCallback("TABCHANGE_CB", iup.TabChangeFunc(func(ih iup.Ihandle, newTab iup.Ihandle, oldTab iup.Ihandle) int {
+		if newTab.GetAttribute("TABTITLE") == "配置" {
+			footerRow.SetAttribute("VISIBLE", "YES")
+			// restore to full height of parent
+			footerRow.SetAttribute("FLOATING", "NO")
+		} else {
+			footerRow.SetAttribute("VISIBLE", "NO")
+			// keep it from affecting layout height while hidden
+			footerRow.SetAttribute("FLOATING", "IGNORE")
+		}
+		if root != 0 {
+			iup.Refresh(root)
+		}
+		return iup.DEFAULT
+	}))
+
+	root = iup.Vbox(
 		ui.statusLabel,
 		tabs,
+		footerRow,
 	).SetAttributes(`GAP=6, MARGIN=10x10`)
 
 	ui.dialog = iup.Dialog(root).SetAttributes(`TITLE="ZJU Connect GUI", MINSIZE=600x400`)
