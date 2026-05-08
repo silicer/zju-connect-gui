@@ -1,3 +1,8 @@
+// Use the windows GUI subsystem so launching from Explorer doesn't flash a
+// console window. The hidden console we still need for CTRL_BREAK signaling
+// is allocated explicitly via `platform::init_console_for_signaling()` below.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 slint::include_modules!();
 
 mod app;
