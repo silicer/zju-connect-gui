@@ -96,18 +96,15 @@ fn apply_event(window: &AppWindow, cap: usize, event: ProxyEvent) {
             Ok((image, w, h)) => {
                 window.set_modal_type(1);
                 window.set_modal_title(SharedString::from("图形验证码"));
-                window.set_modal_prompt(SharedString::from(
-                    "请在图片上按顺序点击对应位置，然后提交",
-                ));
+                window
+                    .set_modal_prompt(SharedString::from("请在图片上按顺序点击对应位置，然后提交"));
                 window.set_captcha_image(image);
                 window.set_captcha_natural_width(w);
                 window.set_captcha_natural_height(h);
                 window.set_modal_open(true);
             }
             Err(err) => {
-                window.set_status_message(SharedString::from(format!(
-                    "验证码解码失败：{err}"
-                )));
+                window.set_status_message(SharedString::from(format!("验证码解码失败：{err}")));
             }
         },
         ProxyEvent::Error(msg) => {

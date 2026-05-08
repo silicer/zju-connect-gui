@@ -246,9 +246,7 @@ fn wire_ui_callbacks(
         window.on_submit_captcha(move |natural_w, natural_h| {
             let Some(w) = weak.upgrade() else { return };
             if natural_w <= 0 || natural_h <= 0 {
-                w.set_status_message(SharedString::from(
-                    "验证码尺寸未就绪，请重新点击验证码",
-                ));
+                w.set_status_message(SharedString::from("验证码尺寸未就绪，请重新点击验证码"));
                 return;
             }
             let points: Vec<CaptchaPoint> = captcha_model.iter().collect();
