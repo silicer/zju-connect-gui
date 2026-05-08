@@ -1,0 +1,60 @@
+// Design tokens translated from /tmp/wails-ref/style.css :root.
+// Colors are alpha-aware (RGBA hex format).
+export global Theme {
+    // Page surfaces
+    out property <color> page-base: #F2F2F2;
+    out property <color> surface-primary: #FFFFFFEB;
+    out property <color> surface-secondary: #F7FAF8;
+    out property <color> surface-tertiary: #EDF3F0;
+    out property <color> surface-accent: #ECFDF4;
+    out property <color> surface-warning: #FFF7E3;
+
+    // Text
+    out property <color> ink-strong: #0F172A;
+    out property <color> ink-body: #334155;
+    out property <color> ink-muted: #64748B;
+    out property <color> ink-soft: #94A3B8;
+
+    // Lines and washes
+    out property <color> line-soft: #94A3B82E;
+    out property <color> line-strong: #64748B3D;
+    out property <color> wash-accent: #10B9811F;
+    out property <color> wash-cool: #94A3B829;
+
+    // Brand and semantic
+    out property <color> accent: #10B981;
+    out property <color> accent-strong: #059669;
+    out property <color> accent-deep: #047857;
+    out property <color> danger: #F43F5E;
+    out property <color> danger-strong: #E11D48;
+    out property <color> warning: #D97706;
+
+    // Spacing scale (matches CSS rem-based values; 1rem ≈ 14px in our window)
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-5: 20px;
+    out property <length> space-6: 24px;
+    out property <length> space-7: 32px;
+    out property <length> space-8: 40px;
+
+    // Radii
+    out property <length> radius-s: 14px;
+    out property <length> radius-m: 18px;
+    out property <length> radius-l: 24px;
+    out property <length> radius-pill: 999px;
+
+    // Typography
+    out property <length> font-display-size: 22px;
+    out property <length> font-title-size: 18px;
+    out property <length> font-body-size: 14px;
+    out property <length> font-caption-size: 12px;
+    out property <length> font-mono-size: 12px;
+    out property <string> font-display-family: "PingFang SC, Microsoft YaHei UI, Noto Sans SC, sans-serif";
+    out property <string> font-mono-family: "JetBrains Mono, Cascadia Code, Consolas, monospace";
+
+    // Motion
+    out property <duration> motion-fast: 160ms;
+    out property <duration> motion-mid: 220ms;
+}

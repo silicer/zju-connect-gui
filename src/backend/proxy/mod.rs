@@ -6,6 +6,6 @@ pub mod retry;
 mod manager;
 
 pub use manager::{
-    EipOpener, ProxyEvent, ProxyManager, ProxyManagerConfig, ProxyState, StartError, StateSnapshot,
-    StopError, SubmitInputError, UiBridge,
+    EipOpener, InputKind, ProxyEvent, ProxyManager, ProxyManagerConfig, ProxyState, StartError,
+    StateSnapshot, StopError, SubmitInputError, UiBridge,
 };

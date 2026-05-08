@@ -541,14 +541,13 @@ fn binary_path_under(app_dir: &Path) -> PathBuf {
 
 #[cfg(target_os = "windows")]
 fn configure_child_process(command: &mut tokio::process::Command) {
-    use std::os::windows::process::CommandExt;
     // CREATE_NEW_PROCESS_GROUP (0x00000200): the child becomes the lead of its own
     // process group, which lets us target it with `GenerateConsoleCtrlEvent` for
-    // graceful shutdown without affecting our own group. Note: we deliberately do NOT
-    // set CREATE_NO_WINDOW — that flag detaches the child from any console handle,
-    // which would also block console-signal delivery. Instead we allocate a hidden
-    // console for ourselves at startup (see `platform::init_console_for_signaling`),
-    // which the child inherits via the spawn.
+    // graceful shutdown without affecting our own group. We deliberately do NOT set
+    // CREATE_NO_WINDOW — that flag detaches the child from any console handle, which
+    // also blocks console-signal delivery. Instead we allocate a hidden console for
+    // ourselves at startup (see `platform::init_console_for_signaling`) which the
+    // child inherits via the spawn.
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
     command.creation_flags(CREATE_NEW_PROCESS_GROUP);
 }

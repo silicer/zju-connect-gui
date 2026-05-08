@@ -1,13 +1,933 @@
+import { LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct CaptchaPoint {
+    x: int,
+    y: int,
+}
+
+// Status banner shown when status_message is non-empty.
+component StatusBanner inherits Rectangle {
+    in property <string> message;
+    background: Theme.surface-warning;
+    border-color: Theme.warning;
+    border-width: 1px;
+    border-radius: Theme.radius-s;
+    height: txt.preferred-height + Theme.space-3 * 2;
+    txt := Text {
+        x: Theme.space-4;
+        y: Theme.space-3;
+        width: parent.width - Theme.space-4 * 2;
+        text: root.message;
+        color: Theme.warning;
+        font-size: Theme.font-body-size;
+        wrap: word-wrap;
+    }
+}
+
+component PanelSurface inherits Rectangle {
+    background: Theme.surface-primary;
+    border-color: Theme.line-soft;
+    border-width: 1px;
+    border-radius: Theme.radius-l;
+    drop-shadow-blur: 28px;
+    drop-shadow-color: #0F172A14;
+    drop-shadow-offset-y: 6px;
+}
+
+component HeaderCard inherits PanelSurface {
+    in property <string> status-message;
+    in property <bool> running;
+
+    VerticalLayout {
+        padding: Theme.space-6;
+        spacing: Theme.space-4;
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            alignment: space-between;
+            VerticalLayout {
+                spacing: Theme.space-1;
+                Text {
+                    text: "ZJU Connect GUI";
+                    color: Theme.ink-strong;
+                    font-size: Theme.font-display-size;
+                    font-weight: 700;
+                }
+                Text {
+                    text: "基于 zju-connect CLI 的桌面控制台";
+                    color: Theme.ink-muted;
+                    font-size: Theme.font-body-size;
+                }
+            }
+            Rectangle {
+                width: 110px;
+                height: 32px;
+                background: root.running ? Theme.accent : Theme.line-soft;
+                border-radius: Theme.radius-pill;
+                Text {
+                    text: root.running ? "已连接" : "未连接";
+                    color: root.running ? #FFFFFF : Theme.ink-muted;
+                    font-size: Theme.font-caption-size;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if root.status-message != "" : StatusBanner {
+            message: root.status-message;
+        }
+    }
+}
+
+component TabSwitcher inherits Rectangle {
+    in-out property <int> active-tab;
+    background: Theme.line-soft;
+    border-radius: Theme.radius-pill;
+    height: 44px;
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 0;
+        Rectangle {
+            background: root.active-tab == 0 ? #FFFFFF : transparent;
+            border-radius: Theme.radius-pill;
+            drop-shadow-blur: root.active-tab == 0 ? 8px : 0;
+            drop-shadow-color: #0F172A0F;
+            animate background { duration: Theme.motion-fast; }
+            Text {
+                text: "配置";
+                color: root.active-tab == 0 ? Theme.ink-strong : Theme.ink-muted;
+                font-weight: 600;
+                font-size: Theme.font-body-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.active-tab = 0; } }
+        }
+        Rectangle {
+            background: root.active-tab == 1 ? #FFFFFF : transparent;
+            border-radius: Theme.radius-pill;
+            drop-shadow-blur: root.active-tab == 1 ? 8px : 0;
+            drop-shadow-color: #0F172A0F;
+            animate background { duration: Theme.motion-fast; }
+            Text {
+                text: "日志";
+                color: root.active-tab == 1 ? Theme.ink-strong : Theme.ink-muted;
+                font-weight: 600;
+                font-size: Theme.font-body-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.active-tab = 1; } }
+        }
+    }
+}
+
+component LabeledField inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> password;
+    in-out property <string> value;
+    in property <string> placeholder;
+    spacing: Theme.space-2;
+    Text {
+        text: root.label;
+        color: Theme.ink-body;
+        font-size: Theme.font-caption-size;
+        font-weight: 600;
+    }
+    LineEdit {
+        text <=> root.value;
+        placeholder-text: root.placeholder;
+        input-type: root.password ? InputType.password : InputType.text;
+    }
+}
+
+component SettingsDivider inherits Rectangle {
+    height: 1px;
+    background: Theme.line-soft;
+}
+
+component ToggleCard inherits Rectangle {
+    in property <string> title;
+    in property <string> copy;
+    in-out property <bool> value;
+    background: Theme.surface-secondary;
+    border-color: Theme.line-soft;
+    border-width: 1px;
+    border-radius: Theme.radius-m;
+    height: row.preferred-height + Theme.space-4 * 2;
+    row := HorizontalLayout {
+        x: Theme.space-4;
+        y: Theme.space-4;
+        width: parent.width - Theme.space-4 * 2;
+        spacing: Theme.space-4;
+        alignment: space-between;
+        VerticalLayout {
+            spacing: Theme.space-1;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                color: Theme.ink-strong;
+                font-weight: 600;
+                font-size: Theme.font-body-size;
+            }
+            Text {
+                text: root.copy;
+                color: Theme.ink-muted;
+                font-size: Theme.font-caption-size;
+                wrap: word-wrap;
+            }
+        }
+        Rectangle {
+            width: 48px;
+            height: 26px;
+            border-radius: Theme.radius-pill;
+            background: root.value ? Theme.accent : Theme.line-strong;
+            animate background { duration: Theme.motion-fast; }
+            Rectangle {
+                x: root.value ? parent.width - self.width - 3px : 3px;
+                y: 3px;
+                width: 20px;
+                height: 20px;
+                border-radius: 10px;
+                background: #FFFFFF;
+                drop-shadow-blur: 4px;
+                drop-shadow-color: #0F172A26;
+                animate x { duration: Theme.motion-fast; easing: ease-in-out; }
+            }
+            TouchArea { clicked => { root.value = !root.value; } }
+        }
+    }
+    TouchArea { clicked => { root.value = !root.value; } }
+}
+
+component InfoBanner inherits Rectangle {
+    background: Theme.surface-accent;
+    border-color: Theme.accent;
+    border-width: 1px;
+    border-radius: Theme.radius-m;
+    height: vlay.preferred-height + Theme.space-4 * 2;
+    vlay := VerticalLayout {
+        x: Theme.space-4;
+        y: Theme.space-4;
+        width: parent.width - Theme.space-4 * 2;
+        spacing: Theme.space-1;
+        Text {
+            text: "仅代理模式说明";
+            color: Theme.accent-deep;
+            font-weight: 700;
+            font-size: Theme.font-body-size;
+        }
+        Text {
+            text: "开启后，只提供本机 SOCKS 和 HTTP 代理端口，适合手动给浏览器或其他应用填写代理。";
+            color: Theme.accent-deep;
+            font-size: Theme.font-caption-size;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "关闭后，除了本地代理端口，还会额外启用 TUN / 系统路由接管，让系统流量按连接规则走。";
+            color: Theme.accent-deep;
+            font-size: Theme.font-caption-size;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component AppButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> ghost;
+    in property <bool> small;
+    callback clicked();
+    height: root.small ? 32px : 40px;
+    width: root.small ? lbl.preferred-width + 28px : lbl.preferred-width + 40px;
+    border-radius: root.small ? Theme.radius-s : Theme.radius-m;
+    background: root.primary
+        ? (touch.has-hover ? Theme.accent-strong : Theme.accent)
+        : (root.ghost
+            ? (touch.has-hover ? Theme.line-soft : transparent)
+            : (touch.has-hover ? Theme.surface-tertiary : Theme.surface-secondary));
+    border-color: root.ghost ? Theme.line-strong : (root.primary ? Theme.accent-deep : Theme.line-soft);
+    border-width: 1px;
+    animate background { duration: Theme.motion-fast; }
+    lbl := Text {
+        text: root.label;
+        color: root.primary ? #FFFFFF : Theme.ink-body;
+        font-size: root.small ? Theme.font-caption-size : Theme.font-body-size;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component AdvancedCard inherits VerticalLayout {
+    in-out property <bool> open;
+    in-out property <string> browser-program;
+    in-out property <string> browser-args;
+    callback pick-program();
+    callback clear-program();
+    spacing: Theme.space-3;
+
+    Rectangle {
+        height: summary-row.preferred-height + Theme.space-3 * 2;
+        background: Theme.surface-secondary;
+        border-radius: Theme.radius-m;
+        border-color: Theme.line-soft;
+        border-width: 1px;
+        summary-row := HorizontalLayout {
+            x: Theme.space-4;
+            y: Theme.space-3;
+            width: parent.width - Theme.space-4 * 2;
+            spacing: Theme.space-3;
+            alignment: space-between;
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+                Text {
+                    text: "EIP 打开设置";
+                    color: Theme.ink-strong;
+                    font-weight: 600;
+                    font-size: Theme.font-body-size;
+                }
+                Text {
+                    text: "默认折叠，可按需指定浏览器程序和附加参数。";
+                    color: Theme.ink-muted;
+                    font-size: Theme.font-caption-size;
+                }
+            }
+            Text {
+                text: root.open ? "收起 ▴" : "展开 ▾";
+                color: Theme.accent;
+                font-weight: 600;
+                font-size: Theme.font-caption-size;
+                vertical-alignment: center;
+            }
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open = !root.open; }
+        }
+    }
+
+    if root.open : VerticalLayout {
+        spacing: Theme.space-3;
+        VerticalLayout {
+            spacing: Theme.space-2;
+            Text {
+                text: "浏览器程序路径";
+                color: Theme.ink-body;
+                font-size: Theme.font-caption-size;
+                font-weight: 600;
+            }
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                LineEdit {
+                    text <=> root.browser-program;
+                    placeholder-text: "留空则使用系统默认浏览器";
+                    horizontal-stretch: 1;
+                }
+                AppButton {
+                    label: "浏览...";
+                    small: true;
+                    clicked => { root.pick-program(); }
+                }
+                if root.browser-program != "" : AppButton {
+                    label: "清空";
+                    ghost: true;
+                    small: true;
+                    clicked => { root.clear-program(); }
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-2;
+            Text {
+                text: "浏览器参数（每行一个）";
+                color: Theme.ink-body;
+                font-size: Theme.font-caption-size;
+                font-weight: 600;
+            }
+            Rectangle {
+                height: 110px;
+                background: #FFFFFF;
+                border-color: Theme.line-soft;
+                border-width: 1px;
+                border-radius: Theme.radius-s;
+                TextEdit {
+                    x: Theme.space-3;
+                    y: Theme.space-2;
+                    width: parent.width - Theme.space-3 * 2;
+                    height: parent.height - Theme.space-2 * 2;
+                    text <=> root.browser-args;
+                    placeholder-text: "每行一个参数，启动时会自动在最后追加 URL";
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+component LogPanel inherits PanelSurface {
+    in property <[string]> logs;
+    in-out property <bool> auto-scroll;
+    height: 420px;
+
+    VerticalLayout {
+        padding: Theme.space-4;
+        spacing: Theme.space-2;
+        if root.logs.length == 0 : Rectangle {
+            height: 80px;
+            Text {
+                text: "暂无日志输出";
+                color: Theme.ink-soft;
+                font-size: Theme.font-body-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if root.logs.length > 0 : ScrollView {
+            VerticalLayout {
+                spacing: 2px;
+                for entry[i] in root.logs : Rectangle {
+                    height: row-text.preferred-height + 4px;
+                    HorizontalLayout {
+                        spacing: Theme.space-3;
+                        Text {
+                            text: i + 1;
+                            color: Theme.ink-soft;
+                            font-family: Theme.font-mono-family;
+                            font-size: Theme.font-mono-size;
+                            width: 36px;
+                            horizontal-alignment: right;
+                        }
+                        row-text := Text {
+                            text: entry;
+                            color: Theme.ink-body;
+                            font-family: Theme.font-mono-family;
+                            font-size: Theme.font-mono-size;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component Fab inherits Rectangle {
+    in property <bool> running;
+    callback clicked();
+    width: 64px;
+    height: 64px;
+    border-radius: 32px;
+    background: root.running
+        ? (touch.has-hover ? Theme.danger-strong : Theme.danger)
+        : (touch.has-hover ? Theme.accent-strong : Theme.accent);
+    drop-shadow-blur: 18px;
+    drop-shadow-color: #0F172A33;
+    drop-shadow-offset-y: 4px;
+    animate background { duration: Theme.motion-fast; }
+    if !root.running : Path {
+        x: parent.width / 2 - 8px;
+        y: parent.height / 2 - 10px;
+        width: 16px;
+        height: 20px;
+        fill: #FFFFFF;
+        commands: "M 0 0 L 0 20 L 16 10 Z";
+    }
+    if root.running : Rectangle {
+        x: parent.width / 2 - 8px;
+        y: parent.height / 2 - 8px;
+        width: 16px;
+        height: 16px;
+        background: #FFFFFF;
+        border-radius: 2px;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "ZJU Connect GUI";
     min-width: 760px;
     min-height: 640px;
     preferred-width: 960px;
     preferred-height: 720px;
+    background: Theme.page-base;
+    default-font-family: Theme.font-display-family;
+    default-font-size: Theme.font-body-size;
 
-    Text {
-        text: "ZJU Connect GUI · Rust + Slint scaffold";
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    // ---- Properties driven from Rust ----
+    in-out property <bool> running: false;
+    in-out property <string> status-message: "";
+    in-out property <[string]> logs: [];
+
+    in-out property <string> username: "";
+    in-out property <string> password: "";
+    in-out property <string> socks-bind: "127.0.0.1:1080";
+    in-out property <string> http-bind: "127.0.0.1:8888";
+    in-out property <bool> proxy-only: false;
+    in-out property <bool> debug-dump: false;
+    in-out property <bool> eip-options-expanded: false;
+    in-out property <string> eip-browser-program: "";
+    in-out property <string> eip-browser-args: "";
+
+    in-out property <int> active-tab: 0;
+    in-out property <bool> auto-scroll: true;
+
+    // Modal state
+    in-out property <bool> modal-open: false;
+    in-out property <int> modal-type: 0;       // 0=input, 1=captcha
+    in-out property <int> modal-input-kind: 0; // 0=generic, 1=sms
+    in-out property <string> modal-title: "";
+    in-out property <string> modal-prompt: "";
+    in-out property <string> modal-input: "";
+    in-out property <image> captcha-image;
+    in-out property <int> captcha-natural-width: 0;
+    in-out property <int> captcha-natural-height: 0;
+    in-out property <[CaptchaPoint]> captcha-points: [];
+
+    // ---- Callbacks to Rust ----
+    callback start();
+    callback stop();
+    callback submit-input(string);
+    callback submit-captcha(int, int); // natural width, natural height
+    callback cancel-modal();
+    callback clear-logs();
+    callback pick-eip-browser();
+    callback clear-eip-browser();
+    callback persist-options();
+    callback add-captcha-point(int, int);
+    callback remove-last-captcha-point();
+    callback clear-captcha-points();
+
+    // Auto-fire persist-options whenever any persisted option changes.
+    changed username => { root.persist-options(); }
+    changed password => { root.persist-options(); }
+    changed socks-bind => { root.persist-options(); }
+    changed http-bind => { root.persist-options(); }
+    changed proxy-only => { root.persist-options(); }
+    changed debug-dump => { root.persist-options(); }
+    changed eip-browser-program => { root.persist-options(); }
+    changed eip-browser-args => { root.persist-options(); }
+
+    // ---- Layout ----
+    Rectangle {
+        // Decorative wash gradients (approximation of CSS radial-gradient pair)
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width * 60%;
+            height: parent.height * 60%;
+            background: @radial-gradient(circle, Theme.wash-accent 0%, transparent 70%);
+        }
+        Rectangle {
+            x: parent.width * 50%;
+            y: 0;
+            width: parent.width * 50%;
+            height: parent.height * 50%;
+            background: @radial-gradient(circle, Theme.wash-cool 0%, transparent 70%);
+        }
+
+        VerticalLayout {
+            padding-left: Theme.space-7;
+            padding-right: Theme.space-7;
+            padding-top: Theme.space-6;
+            padding-bottom: Theme.space-7;
+            spacing: Theme.space-5;
+
+            HeaderCard {
+                status-message: root.status-message;
+                running: root.running;
+            }
+
+            TabSwitcher {
+                active-tab <=> root.active-tab;
+            }
+
+            // Config tab
+            if root.active-tab == 0 : Rectangle {
+                vertical-stretch: 1;
+                ScrollView {
+                    PanelSurface {
+                        VerticalLayout {
+                            padding: Theme.space-6;
+                            spacing: Theme.space-5;
+
+                            InfoBanner { }
+
+                            VerticalLayout {
+                                spacing: Theme.space-4;
+                                VerticalLayout {
+                                    spacing: Theme.space-1;
+                                    Text {
+                                        text: "账号认证";
+                                        color: Theme.ink-strong;
+                                        font-weight: 700;
+                                        font-size: Theme.font-title-size;
+                                    }
+                                    Text {
+                                        text: "使用校园统一认证信息发起连接。";
+                                        color: Theme.ink-muted;
+                                        font-size: Theme.font-caption-size;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: Theme.space-4;
+                                    LabeledField {
+                                        label: "用户名";
+                                        value <=> root.username;
+                                        horizontal-stretch: 1;
+                                    }
+                                    LabeledField {
+                                        label: "密码";
+                                        password: true;
+                                        value <=> root.password;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+
+                            SettingsDivider { }
+
+                            VerticalLayout {
+                                spacing: Theme.space-4;
+                                VerticalLayout {
+                                    spacing: Theme.space-1;
+                                    Text {
+                                        text: "本地代理";
+                                        color: Theme.ink-strong;
+                                        font-weight: 700;
+                                        font-size: Theme.font-title-size;
+                                    }
+                                    Text {
+                                        text: "保持 SOCKS 与 HTTP 两组监听地址，供本机应用接入。";
+                                        color: Theme.ink-muted;
+                                        font-size: Theme.font-caption-size;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: Theme.space-4;
+                                    LabeledField {
+                                        label: "SOCKS 监听地址";
+                                        value <=> root.socks-bind;
+                                        horizontal-stretch: 1;
+                                    }
+                                    LabeledField {
+                                        label: "HTTP 监听地址";
+                                        value <=> root.http-bind;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+
+                            SettingsDivider { }
+
+                            VerticalLayout {
+                                spacing: Theme.space-4;
+                                VerticalLayout {
+                                    spacing: Theme.space-1;
+                                    Text {
+                                        text: "运行方式";
+                                        color: Theme.ink-strong;
+                                        font-weight: 700;
+                                        font-size: Theme.font-title-size;
+                                    }
+                                    Text {
+                                        text: "调整连接模式与诊断输出，不改变现有控制逻辑。";
+                                        color: Theme.ink-muted;
+                                        font-size: Theme.font-caption-size;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: Theme.space-3;
+                                    ToggleCard {
+                                        title: "仅代理模式";
+                                        copy: "开启后仅保留本地 SOCKS / HTTP 代理；关闭后还会启用 TUN 与系统路由。";
+                                        value <=> root.proxy-only;
+                                        horizontal-stretch: 1;
+                                    }
+                                    ToggleCard {
+                                        title: "调试模式";
+                                        copy: "保留更详细的诊断输出，便于排查连接问题。";
+                                        value <=> root.debug-dump;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+
+                            SettingsDivider { }
+
+                            AdvancedCard {
+                                open <=> root.eip-options-expanded;
+                                browser-program <=> root.eip-browser-program;
+                                browser-args <=> root.eip-browser-args;
+                                pick-program => { root.pick-eip-browser(); }
+                                clear-program => { root.clear-eip-browser(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Logs tab
+            if root.active-tab == 1 : VerticalLayout {
+                vertical-stretch: 1;
+                spacing: Theme.space-3;
+                HorizontalLayout {
+                    alignment: space-between;
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text: "运行日志";
+                            color: Theme.ink-strong;
+                            font-weight: 700;
+                            font-size: Theme.font-title-size;
+                        }
+                        Text {
+                            text: "查看当前会话输出，保留自动滚动与清空控制。";
+                            color: Theme.ink-muted;
+                            font-size: Theme.font-caption-size;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.space-3;
+                        alignment: end;
+                        Rectangle {
+                            height: 32px;
+                            width: chip-text.preferred-width + 50px;
+                            background: Theme.surface-secondary;
+                            border-color: Theme.line-soft;
+                            border-width: 1px;
+                            border-radius: Theme.radius-pill;
+                            HorizontalLayout {
+                                padding: 4px;
+                                spacing: Theme.space-2;
+                                alignment: center;
+                                Rectangle {
+                                    width: 28px;
+                                    height: 18px;
+                                    border-radius: 9px;
+                                    background: root.auto-scroll ? Theme.accent : Theme.line-strong;
+                                    Rectangle {
+                                        x: root.auto-scroll ? parent.width - self.width - 2px : 2px;
+                                        y: 2px;
+                                        width: 14px;
+                                        height: 14px;
+                                        border-radius: 7px;
+                                        background: #FFFFFF;
+                                        animate x { duration: Theme.motion-fast; }
+                                    }
+                                }
+                                chip-text := Text {
+                                    text: "自动滚动";
+                                    color: Theme.ink-body;
+                                    font-size: Theme.font-caption-size;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.auto-scroll = !root.auto-scroll; }
+                            }
+                        }
+                        AppButton {
+                            label: "清空";
+                            ghost: true;
+                            small: true;
+                            clicked => { root.clear-logs(); }
+                        }
+                    }
+                }
+                LogPanel {
+                    logs: root.logs;
+                    auto-scroll <=> root.auto-scroll;
+                }
+            }
+        }
+
+        // FAB anchored bottom-right
+        Fab {
+            x: parent.width - self.width - Theme.space-7;
+            y: parent.height - self.height - Theme.space-7;
+            running: root.running;
+            clicked => {
+                if (root.running) { root.stop(); } else { root.start(); }
+            }
+        }
+
+        // Modal layer covers everything when open
+        if root.modal-open : Rectangle {
+            background: #00000080;
+            width: parent.width;
+            height: parent.height;
+            TouchArea { }
+            Rectangle {
+                x: parent.width / 2 - self.width / 2;
+                y: parent.height / 2 - self.height / 2;
+                width: root.modal-input-kind == 1 ? 360px : 520px;
+                height: card-content.preferred-height + Theme.space-6 * 2;
+                background: Theme.surface-primary;
+                border-radius: Theme.radius-l;
+                border-color: Theme.line-soft;
+                border-width: 1px;
+                drop-shadow-blur: 32px;
+                drop-shadow-color: #0F172A40;
+                card-content := VerticalLayout {
+                    x: Theme.space-6;
+                    y: Theme.space-6;
+                    width: parent.width - Theme.space-6 * 2;
+                    spacing: Theme.space-3;
+                    Text {
+                        text: root.modal-title;
+                        color: Theme.ink-strong;
+                        font-weight: 700;
+                        font-size: Theme.font-title-size;
+                    }
+                    Text {
+                        text: root.modal-prompt;
+                        color: Theme.ink-muted;
+                        font-size: Theme.font-body-size;
+                        wrap: word-wrap;
+                    }
+
+                    if root.modal-type == 0 && root.modal-input-kind == 1 : LineEdit {
+                        text <=> root.modal-input;
+                        placeholder-text: "请输入短信验证码";
+                    }
+
+                    if root.modal-type == 0 && root.modal-input-kind == 0 : Rectangle {
+                        height: 90px;
+                        background: #FFFFFF;
+                        border-color: Theme.line-soft;
+                        border-width: 1px;
+                        border-radius: Theme.radius-s;
+                        TextEdit {
+                            x: Theme.space-3;
+                            y: Theme.space-2;
+                            width: parent.width - Theme.space-3 * 2;
+                            height: parent.height - Theme.space-2 * 2;
+                            text <=> root.modal-input;
+                            placeholder-text: "请输入响应内容";
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if root.modal-type == 1 : VerticalLayout {
+                        spacing: Theme.space-3;
+                        Rectangle {
+                            height: 220px;
+                            background: #00000010;
+                            border-radius: Theme.radius-s;
+                            clip: true;
+                            Image {
+                                image-fit: contain;
+                                source: root.captcha-image;
+                                width: parent.width;
+                                height: parent.height;
+                            }
+                            for point[idx] in root.captcha-points : Rectangle {
+                                x: root.captcha-natural-width > 1
+                                    ? (point.x * 1.0 / (root.captcha-natural-width - 1)) * parent.width - 12px
+                                    : 0px;
+                                y: root.captcha-natural-height > 1
+                                    ? (point.y * 1.0 / (root.captcha-natural-height - 1)) * parent.height - 12px
+                                    : 0px;
+                                width: 24px;
+                                height: 24px;
+                                border-radius: 12px;
+                                background: Theme.accent;
+                                drop-shadow-blur: 6px;
+                                drop-shadow-color: #0F172A40;
+                                Text {
+                                    text: idx + 1;
+                                    color: #FFFFFF;
+                                    font-weight: 700;
+                                    font-size: Theme.font-caption-size;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            captcha-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if (root.captcha-natural-width <= 0
+                                        || root.captcha-natural-height <= 0
+                                        || self.width <= 0px
+                                        || self.height <= 0px) {
+                                        return;
+                                    }
+                                    root.add-captcha-point(
+                                        clamp(round(self.mouse-x / self.width
+                                            * (root.captcha-natural-width - 1)),
+                                            0, root.captcha-natural-width - 1),
+                                        clamp(round(self.mouse-y / self.height
+                                            * (root.captcha-natural-height - 1)),
+                                            0, root.captcha-natural-height - 1));
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            AppButton {
+                                label: "撤销上一步";
+                                small: true;
+                                clicked => { root.remove-last-captcha-point(); }
+                            }
+                            AppButton {
+                                label: "清空坐标";
+                                ghost: true;
+                                small: true;
+                                clicked => { root.clear-captcha-points(); }
+                            }
+                            Rectangle {
+                                height: 32px;
+                                border-radius: Theme.radius-pill;
+                                background: Theme.line-soft;
+                                width: chips-text.preferred-width + 24px;
+                                chips-text := Text {
+                                    text: "已选择 " + root.captcha-points.length + " 个点";
+                                    color: Theme.ink-body;
+                                    font-size: Theme.font-caption-size;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        alignment: end;
+                        AppButton {
+                            label: "取消";
+                            ghost: true;
+                            clicked => { root.cancel-modal(); }
+                        }
+                        AppButton {
+                            label: "提交";
+                            primary: true;
+                            clicked => {
+                                if (root.modal-type == 1) {
+                                    root.submit-captcha(root.captcha-natural-width,
+                                        root.captcha-natural-height);
+                                } else {
+                                    root.submit-input(root.modal-input);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
