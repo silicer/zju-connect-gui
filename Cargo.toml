@@ -1,0 +1,19 @@
+[package]
+name = "zju-connect-gui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+description = "Native desktop GUI for zju-connect"
+license = "MIT"
+publish = false
+
+[dependencies]
+slint = { version = "1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "accessibility"] }
+
+[build-dependencies]
+slint-build = "1"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
