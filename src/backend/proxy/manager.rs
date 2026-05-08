@@ -541,13 +541,16 @@ fn binary_path_under(app_dir: &Path) -> PathBuf {
 
 #[cfg(target_os = "windows")]
 fn configure_child_process(command: &mut tokio::process::Command) {
-    use tokio::process::CommandExt as _;
-    // CREATE_NO_WINDOW (0x08000000) | CREATE_NEW_PROCESS_GROUP (0x00000200)
-    // The process group is required so we can target CTRL_BREAK_EVENT at the child
-    // without affecting our own console (handled in the platform module on phase 5).
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    use std::os::windows::process::CommandExt;
+    // CREATE_NEW_PROCESS_GROUP (0x00000200): the child becomes the lead of its own
+    // process group, which lets us target it with `GenerateConsoleCtrlEvent` for
+    // graceful shutdown without affecting our own group. Note: we deliberately do NOT
+    // set CREATE_NO_WINDOW — that flag detaches the child from any console handle,
+    // which would also block console-signal delivery. Instead we allocate a hidden
+    // console for ourselves at startup (see `platform::init_console_for_signaling`),
+    // which the child inherits via the spawn.
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -612,14 +615,11 @@ async fn supervise_child(
     let exit_status = tokio::select! {
         result = child.wait() => result,
         _ = stop_rx => {
-            #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
-            }
-            #[cfg(target_os = "windows")]
-            {
+            // Try to deliver an OS-appropriate graceful-stop signal (SIGINT on unix,
+            // CTRL_BREAK on windows). If that fails, or if the child doesn't exit
+            // within STOP_GRACE_PERIOD, fall back to start_kill (SIGKILL / TerminateProcess).
+            if let Err(err) = crate::backend::platform::signal_child_to_quit(&child) {
+                log::warn!("graceful signal failed: {err}; falling back to kill");
                 let _ = child.start_kill();
             }
             match tokio::time::timeout(STOP_GRACE_PERIOD, child.wait()).await {
