@@ -49,13 +49,18 @@ src/
                                public API: is_process_elevated,
                                relaunch_self_elevated, signal_child_to_quit,
                                wait_for_process_exit, escape_arg,
-                               init_console_for_signaling
+                               init_console_for_signaling,
+                               acquire_single_instance, SingleInstanceGuard
   app.rs                       App coordinator. Wires Slint UI ↔ manager,
-                               settings persistence, resume-after-elevation
+                               settings persistence, resume-after-elevation,
+                               tray controller (Option, best-effort)
   ui_glue.rs                   UiBridge: ProxyEvent → AppWindow via
                                slint::invoke_from_event_loop. Log model is
                                looked up via window.get_logs().as_any().downcast
-  main.rs                      console init, argv parse, app::App::run
+  tray.rs + tray/              Linux ksni impl, Windows/macOS tray-icon impl;
+                               left-click toggles window, menu has show + quit
+  main.rs                      console init, single-instance lock acquire,
+                               argv parse, app::App::run
 ui/
   theme.slint                  design tokens
   main.slint                   AppWindow + components inline
@@ -102,11 +107,17 @@ cargo build --target x86_64-pc-windows-gnu
 
 ## What's deferred (intentionally)
 
-- System tray icon
-- Single-instance lock
 - Frameless window with custom drag (uses OS chrome for now)
 - Native file picker for the EIP browser path (manual paste only)
 - macOS validation (compiles, not exercised on CI)
 
 These are tracked as follow-up work; see plans/gleaming-popping-valiant.md
 for the original phase plan.
+
+## Known build pitfalls
+
+- rustc 1.95.0 has an incremental-cache ICE (`invalid enum variant tag while
+  decoding SymbolExportKind`) that fires under our slint+ksni dep set after a
+  `cargo clean`. Workaround: `CARGO_INCREMENTAL=0 cargo build` (and the same
+  for `test` / `clippy`). The bug is upstream; remove the env var once we
+  bump the toolchain past it.

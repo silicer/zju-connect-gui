@@ -87,17 +87,42 @@ scripts/                   build_linux_appimage.sh
 - Slint UI updates from tokio worker threads are routed through
   `slint::invoke_from_event_loop`. The log model is a `VecModel<SharedString>`
   set on the window once and mutated in-place via downcast from `get_logs()`.
+- The tray icon lives in `src/tray/`, split by platform: Linux uses `ksni`
+  (StatusNotifierItem over zbus, no GTK runtime dep), while Windows and macOS
+  use `tray-icon`. Both impls expose the same `TrayController` and forward
+  every UI-touching action back through `slint::invoke_from_event_loop`. Tray
+  creation is best-effort — on a desktop without StatusNotifierItem support
+  the GUI starts without a tray (warning logged).
+- Single-instance enforcement runs before the window is created
+  (`platform::acquire_single_instance` in `src/main.rs`). Unix uses
+  `flock(LOCK_EX|LOCK_NB)` on `app_dir/instance.lock`; Windows uses a
+  `Local\` named mutex. A second launch logs and exits cleanly with status 0.
 
 ## Known limitations (v1)
 
-- No system tray icon yet (planned for a follow-up commit).
-- No single-instance lock (will be added with the tray work since both touch
-  the startup path).
 - The "browse..." button for the EIP browser program is a stub (paste the
   path manually for now).
 - macOS compiles but is not exercised in CI.
 - Title-bar drag uses the OS chrome; the frameless Wails-style bar will
   return once the cross-platform drag plumbing in Slint is hooked up.
+- On GNOME the tray icon requires the AppIndicator/KStatusNotifierItem
+  shell extension (KDE Plasma works out of the box).
+
+## Display sizing
+
+The window enforces `min-width: 700px` and `min-height: 520px` (both in Slint
+*logical* pixels). That floor was picked to fit the smallest realistic
+Windows desktop after DPI scaling — a 1366×768 panel at 150% scale gives a
+911×512 logical viewport, which is the tightest mainstream case we want to
+remain usable. The `preferred-width: 960px` and `preferred-height: 720px`
+are what gets used when the user opens the app on a roomier display.
+
+Slint renders in logical pixels and lets the windowing system upscale to the
+physical resolution, so HiDPI / 4K and Retina displays are handled by the OS
+without per-app code; fonts and layouts scale automatically. The captcha and
+input modals additionally clamp their cards to the current window size in
+`ui/modals.slint`, so they never overflow when the window is at or near the
+minimum.
 
 ## License
 
