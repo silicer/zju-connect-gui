@@ -1,9 +1,11 @@
+use std::fs::{File, OpenOptions};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::time::Duration;
 
 use tokio::process::Child;
 
-use super::{ElevationError, WaitError};
+use super::{ElevationError, SingleInstanceError, WaitError};
 
 /// No-op on unix; the windows build attaches a hidden console here so CTRL_BREAK
 /// can later be delivered to the child.
@@ -49,4 +51,35 @@ pub fn signal_child_to_quit(child: &Child) -> std::io::Result<()> {
 /// so this is a no-op that exists for API parity with the windows side.
 pub fn escape_arg(arg: &str) -> String {
     arg.to_string()
+}
+
+/// RAII guard for the single-instance lock. The kernel releases the flock when the
+/// underlying file descriptor is closed (i.e. when this guard is dropped or the
+/// process exits, including via SIGKILL).
+pub struct SingleInstanceGuard {
+    _file: File,
+}
+
+/// Acquire an exclusive, non-blocking flock on `lock_path`. Returns
+/// `SingleInstanceError::AlreadyRunning` if another process already holds it. Other
+/// failures (file open / underlying flock errors) surface as `Io`.
+pub fn acquire_single_instance(
+    lock_path: &Path,
+) -> Result<SingleInstanceGuard, SingleInstanceError> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret == 0 {
+        return Ok(SingleInstanceGuard { _file: file });
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => {
+            Err(SingleInstanceError::AlreadyRunning)
+        }
+        _ => Err(SingleInstanceError::Io(err)),
+    }
 }

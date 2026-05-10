@@ -20,8 +20,15 @@ base64 = "0.22"
 rand = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = "0.19"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", features = ["blocking"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", default-features = false, features = ["signal"] }
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -44,5 +51,7 @@ slint-build = "1"
 
 [profile.release]
 strip = "symbols"
-lto = "thin"
+# thin LTO trips an LLVM 22 bitcode bug under rustc 1.95 ("Missing element
+# type for old-style global"). Re-enable once we move past that toolchain.
+lto = false
 codegen-units = 1

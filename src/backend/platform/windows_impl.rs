@@ -1,26 +1,28 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::process::Child;
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_CANCELLED, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, HANDLE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Console::{
     AllocConsole, GenerateConsoleCtrlEvent, GetConsoleWindow, CTRL_BREAK_EVENT,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    CreateMutexW, GetCurrentProcess, OpenProcess, OpenProcessToken, WaitForSingleObject,
+    PROCESS_SYNCHRONIZE,
 };
 use windows::Win32::UI::Shell::{
     ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_NORMAL};
 
-use super::{ElevationError, WaitError};
+use super::{ElevationError, SingleInstanceError, WaitError};
 
 /// Allocate (and hide) a console at startup so we can later use
 /// `GenerateConsoleCtrlEvent` to deliver CTRL_BREAK to the spawned zju-connect
@@ -168,6 +170,47 @@ pub fn escape_arg(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// RAII guard for the single-instance named-mutex lock. Drop calls `CloseHandle`,
+/// which releases the kernel object so a future launch can acquire it.
+pub struct SingleInstanceGuard {
+    handle: HANDLE,
+}
+
+// HANDLE is a raw pointer; the OS-level mutex it points to is safe to ship across
+// threads as long as we only call CloseHandle once (in Drop).
+unsafe impl Send for SingleInstanceGuard {}
+unsafe impl Sync for SingleInstanceGuard {}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+/// Acquire a per-user named mutex. Returns `AlreadyRunning` when the OS reports
+/// `ERROR_ALREADY_EXISTS`, meaning another process in the same session already
+/// owns it. The `lock_path` argument is unused on Windows (named mutexes don't
+/// need a filesystem entry) but kept for cross-platform API parity with Unix.
+pub fn acquire_single_instance(
+    _lock_path: &Path,
+) -> Result<SingleInstanceGuard, SingleInstanceError> {
+    // The "Local\" prefix scopes the mutex to the current logon session, which is
+    // what we want — different users on the same machine get independent locks.
+    let name = HSTRING::from("Local\\zju-connect-gui-singleton-mutex");
+    unsafe {
+        let handle = CreateMutexW(None, false, &name).map_err(|err| {
+            SingleInstanceError::Io(std::io::Error::other(format!("CreateMutexW: {err}")))
+        })?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(handle);
+            return Err(SingleInstanceError::AlreadyRunning);
+        }
+        Ok(SingleInstanceGuard { handle })
+    }
 }
 
 fn to_wide_os(s: &OsStr) -> Vec<u16> {
