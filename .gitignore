@@ -1,4 +1,6 @@
 .ace-tool/
+.omc/
+/target/
 build/bin
 node_modules
 /dist/

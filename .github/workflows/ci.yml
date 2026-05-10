@@ -4,8 +4,10 @@ on:
   push:
     branches:
       - 'feature/*'
+      - 'refactor/*'
   pull_request:
     branches:
+      - master
       - dev
 
 concurrency:
@@ -16,40 +18,34 @@ permissions:
   contents: read
 
 jobs:
-  backend-test:
-    name: backend-test
-    runs-on: ubuntu-latest
+  fmt-clippy-test:
+    name: fmt + clippy + test (linux)
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
+          components: rustfmt, clippy
 
-      - name: Run backend tests
-        run: go test ./internal/backend
-
-  native-build:
-    name: native-build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Install Linux native UI dependencies
+      - name: Install slint runtime deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libfontconfig-dev libxcb1-dev libxcursor-dev \
+            libxrandr-dev libxi-dev pkg-config
 
-      - name: Build native desktop app
-        run: go build .
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-targets
