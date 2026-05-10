@@ -10,6 +10,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
 
+use crate::tray::TrayController;
 use crate::ui_glue::CapturingBridge;
 use crate::{AppWindow, CaptchaPoint};
 
@@ -29,6 +30,7 @@ pub struct App {
     pub _manager: ProxyManager,
     pub _settings: Arc<UserSettingsStore>,
     pub _runtime: Runtime,
+    pub _tray: Option<TrayController>,
 }
 
 impl App {
@@ -96,16 +98,42 @@ impl App {
             );
         }
 
+        // Tray creation is best-effort: on Linux without libayatana-appindicator
+        // it will fail, and we'd rather start the GUI without a tray than abort.
+        let tray = match TrayController::new(window.as_weak()) {
+            Ok(t) => Some(t),
+            Err(err) => {
+                log::warn!("tray icon disabled: {err}");
+                None
+            }
+        };
+
+        wire_quit_and_close(
+            &window,
+            manager.clone(),
+            runtime.handle().clone(),
+            tray.is_some(),
+        );
+
         Ok(Self {
             window,
             _manager: manager,
             _settings: settings,
             _runtime: runtime,
+            _tray: tray,
         })
     }
 
     pub fn run(self) -> Result<(), AppError> {
-        self.window.run().map_err(AppError::Window)
+        // Show the window, then drive the event loop with the
+        // `_until_quit` variant so it stays alive across hide/close — only
+        // an explicit `slint::quit_event_loop()` (issued by `request-quit`
+        // in `wire_quit_and_close`) tears it down. Without this, hiding
+        // the only window triggers Slint's "quit on last window closed"
+        // default and the tray immediately stops responding.
+        self.window.show().map_err(AppError::Window)?;
+        slint::run_event_loop_until_quit().map_err(AppError::Window)?;
+        Ok(())
     }
 }
 
@@ -117,6 +145,61 @@ pub enum AppError {
     Runtime(std::io::Error),
     #[error("failed to create application window: {0}")]
     Window(slint::PlatformError),
+}
+
+/// Wire `request-quit` (graceful proxy stop → quit event loop) and the
+/// window's close button. The close button hides the window when a tray is
+/// available; without a tray it routes through `request-quit` so the user
+/// still has an escape hatch.
+fn wire_quit_and_close(
+    window: &AppWindow,
+    manager: ProxyManager,
+    runtime: tokio::runtime::Handle,
+    has_tray: bool,
+) {
+    {
+        let manager = manager.clone();
+        let runtime = runtime.clone();
+        window.on_request_quit(move || {
+            let manager = manager.clone();
+            runtime.spawn(async move {
+                if manager.is_running() {
+                    log::info!("graceful quit: stopping proxy before exit");
+                    if let Err(err) = manager.stop() {
+                        log::warn!("graceful quit: manager.stop returned {err}");
+                    }
+                    // Wait for the supervisor to actually clear child_pid; cap
+                    // at 7 seconds so a stuck child can't pin the GUI forever.
+                    for _ in 0..70 {
+                        if manager.snapshot().child_pid.is_none() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+                let _ = slint::invoke_from_event_loop(|| {
+                    let _ = slint::quit_event_loop();
+                });
+            });
+        });
+    }
+
+    let weak = window.as_weak();
+    window.window().on_close_requested(move || {
+        if has_tray {
+            // Tray is available — hide instead of quitting so the user can
+            // re-open via tray click. The "退出" tray menu invokes
+            // `request-quit` to actually terminate.
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            // No tray escape hatch — route through `request-quit` so we still
+            // do graceful proxy shutdown before tearing down the runtime.
+            if let Some(w) = weak.upgrade() {
+                w.invoke_request_quit();
+            }
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
 }
 
 fn apply_options_to_window(window: &AppWindow, options: &LaunchOptions) {
@@ -131,7 +214,12 @@ fn apply_options_to_window(window: &AppWindow, options: &LaunchOptions) {
 }
 
 fn read_options_from_window(window: &AppWindow) -> LaunchOptions {
-    LaunchOptions {
+    use zju_connect_gui::backend::launch_options::normalize_launch_options;
+    // The Slint side only owns the user-tunable fields. Normalization fills in the
+    // fixed defaults (protocol=atrust, server, port, …) that the original Go code
+    // re-applied on every load/save, so subsequent `validate()` and `start()` calls
+    // see a complete, well-formed LaunchOptions.
+    normalize_launch_options(LaunchOptions {
         username: window.get_username().to_string(),
         password: window.get_password().to_string(),
         socks_bind: window.get_socks_bind().to_string(),
@@ -141,7 +229,7 @@ fn read_options_from_window(window: &AppWindow) -> LaunchOptions {
         eip_browser_program: window.get_eip_browser_program().to_string(),
         eip_browser_args: parse_args_textarea(&window.get_eip_browser_args()),
         ..LaunchOptions::default()
-    }
+    })
 }
 
 fn parse_args_textarea(value: &str) -> Vec<String> {

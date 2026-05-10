@@ -1,0 +1,237 @@
+import { Theme } from "theme.slint";
+import {
+    Button, HorizontalBox, LineEdit, TextEdit, VerticalBox,
+} from "std-widgets.slint";
+
+export struct CaptchaPoint {
+    x: int,
+    y: int,
+}
+
+// Card surface used by both modals so the dim-overlay logic stays consistent.
+// Width and height clamp to the viewport so the card can never overflow even
+// when the user has shrunk the window below `card-width`.
+component ModalCard inherits Rectangle {
+    in property <length> card-width;
+    in property <length> card-min-height: 140px;
+    background: #00000080;
+
+    Rectangle {
+        property <length> available-width: parent.width - 32px;
+        property <length> available-height: parent.height - 32px;
+
+        x: parent.width / 2 - self.width / 2;
+        y: parent.height / 2 - self.height / 2;
+        width: min(root.card-width, self.available-width);
+        height: min(
+            max(root.card-min-height, content.preferred-height),
+            self.available-height
+        );
+        background: Theme.surface-primary;
+        border-color: Theme.line-soft;
+        border-width: 1px;
+        border-radius: Theme.radius-m;
+        clip: true;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #0F172A40;
+
+        content := VerticalLayout {
+            // 让 children 自然撑高度，外层 Rectangle 用 content.preferred-height
+            // 决定卡片高度（VerticalBox 不行，因为内部 padding 会影响测量节奏）。
+            padding: Theme.space-6;
+            spacing: Theme.space-3;
+            @children
+        }
+    }
+}
+
+export component InputModal inherits ModalCard {
+    in property <string> title;
+    in property <string> prompt;
+    in property <bool> sms;
+    in-out property <string> input;
+    callback submit();
+    callback cancel();
+
+    card-width: root.sms ? 360px : 480px;
+
+    Text {
+        text: root.title;
+        color: Theme.ink-strong;
+        font-size: Theme.font-title-size;
+        font-weight: 700;
+    }
+    Text {
+        text: root.prompt;
+        color: Theme.ink-muted;
+        font-size: Theme.font-body-size;
+        wrap: word-wrap;
+    }
+
+    if root.sms: LineEdit {
+        placeholder-text: "请输入短信验证码";
+        text <=> root.input;
+    }
+    if !root.sms: Rectangle {
+        height: 90px;
+        background: Theme.surface-primary;
+        border-color: Theme.line-soft;
+        border-width: 1px;
+        border-radius: Theme.radius-s;
+        TextEdit {
+            x: Theme.space-2;
+            y: Theme.space-2;
+            width: parent.width - Theme.space-2 * 2;
+            height: parent.height - Theme.space-2 * 2;
+            text <=> root.input;
+            wrap: word-wrap;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        alignment: end;
+        Button {
+            text: "取消";
+            clicked => { root.cancel(); }
+        }
+        Button {
+            text: "提交";
+            primary: true;
+            clicked => { root.submit(); }
+        }
+    }
+}
+
+export component CaptchaModal inherits ModalCard {
+    in property <string> prompt;
+    in property <image> captcha-image;
+    in property <int> natural-width;
+    in property <int> natural-height;
+    in property <[CaptchaPoint]> points;
+    callback add-point(int, int);
+    callback remove-last();
+    callback clear-points();
+    callback submit();
+    callback cancel();
+
+    card-width: 540px;
+
+    Text {
+        text: "图形验证码";
+        color: Theme.ink-strong;
+        font-size: Theme.font-title-size;
+        font-weight: 700;
+    }
+    Text {
+        text: root.prompt;
+        color: Theme.ink-muted;
+        font-size: Theme.font-body-size;
+        wrap: word-wrap;
+    }
+
+    // The image container is sized to match the image's aspect ratio so mouse
+    // coordinates inside the TouchArea map directly to image pixel coordinates
+    // (no letterbox to compensate for, no scaling drift).
+    HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            property <length> bound-width: 480px;
+            property <length> bound-height: 240px;
+            // Pick the largest box that fits both bounds and matches image aspect.
+            property <length> rect-width: root.natural-width > 0 && root.natural-height > 0
+                ? min(self.bound-width, self.bound-height * (root.natural-width / 1.0) / root.natural-height)
+                : self.bound-width;
+            property <length> rect-height: root.natural-width > 0 && root.natural-height > 0
+                ? self.rect-width * root.natural-height / root.natural-width
+                : self.bound-height;
+
+            width: self.rect-width;
+            height: self.rect-height;
+            background: #00000010;
+            border-radius: Theme.radius-s;
+            clip: true;
+
+            Image {
+                source: root.captcha-image;
+                width: parent.width;
+                height: parent.height;
+                image-fit: fill;
+            }
+
+            for point[idx] in root.points: Rectangle {
+                x: root.natural-width > 1
+                    ? point.x * 1.0 / (root.natural-width - 1) * parent.width - 12px
+                    : 0px;
+                y: root.natural-height > 1
+                    ? point.y * 1.0 / (root.natural-height - 1) * parent.height - 12px
+                    : 0px;
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: Theme.accent;
+                drop-shadow-blur: 6px;
+                drop-shadow-color: #0F172A40;
+                Text {
+                    text: idx + 1;
+                    color: white;
+                    font-weight: 700;
+                    font-size: Theme.font-caption-size;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    if (root.natural-width <= 0 || root.natural-height <= 0
+                        || self.width <= 0px || self.height <= 0px) {
+                        return;
+                    }
+                    root.add-point(
+                        clamp(round(self.mouse-x / self.width * (root.natural-width - 1)),
+                              0, root.natural-width - 1),
+                        clamp(round(self.mouse-y / self.height * (root.natural-height - 1)),
+                              0, root.natural-height - 1));
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        Button {
+            text: "撤销上一步";
+            enabled: root.points.length > 0;
+            clicked => { root.remove-last(); }
+        }
+        Button {
+            text: "清空坐标";
+            enabled: root.points.length > 0;
+            clicked => { root.clear-points(); }
+        }
+        HorizontalLayout { horizontal-stretch: 1; }
+        Text {
+            text: "已选 " + root.points.length + " 个点";
+            color: Theme.ink-muted;
+            font-size: Theme.font-caption-size;
+            vertical-alignment: center;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        alignment: end;
+        Button {
+            text: "取消";
+            clicked => { root.cancel(); }
+        }
+        Button {
+            text: "提交";
+            primary: true;
+            enabled: root.points.length > 0;
+            clicked => { root.submit(); }
+        }
+    }
+}

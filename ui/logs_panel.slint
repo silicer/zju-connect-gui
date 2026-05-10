@@ -1,0 +1,78 @@
+import { Theme } from "theme.slint";
+import { Button, HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
+
+export component LogsPanel inherits VerticalBox {
+    in property <[string]> logs;
+    callback clear-logs();
+
+    spacing: Theme.space-3;
+
+    HorizontalBox {
+        spacing: Theme.space-2;
+        alignment: end;
+        Text {
+            text: root.logs.length > 0
+                ? "共 " + root.logs.length + " 条"
+                : "暂无日志";
+            color: Theme.ink-muted;
+            font-size: Theme.font-caption-size;
+            vertical-alignment: center;
+        }
+        Button {
+            text: "清空";
+            enabled: root.logs.length > 0;
+            clicked => { root.clear-logs(); }
+        }
+    }
+
+    Rectangle {
+        background: Theme.surface-primary;
+        border-color: Theme.line-soft;
+        border-width: 1px;
+        border-radius: Theme.radius-m;
+        vertical-stretch: 1;
+
+        if root.logs.length == 0: Text {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "运行后将在此显示 zju-connect 的实时输出";
+            color: Theme.ink-soft;
+            font-size: Theme.font-body-size;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if root.logs.length > 0: ScrollView {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+
+            VerticalLayout {
+                padding: Theme.space-3;
+                spacing: 2px;
+                for entry[i] in root.logs: HorizontalLayout {
+                    spacing: Theme.space-3;
+                    Text {
+                        text: i + 1;
+                        color: Theme.ink-soft;
+                        font-family: Theme.font-mono-family;
+                        font-size: Theme.font-mono-size;
+                        width: 36px;
+                        horizontal-alignment: right;
+                    }
+                    Text {
+                        text: entry;
+                        color: Theme.ink-body;
+                        font-family: Theme.font-mono-family;
+                        font-size: Theme.font-mono-size;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+        }
+    }
+}

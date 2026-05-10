@@ -403,7 +403,12 @@ impl ProxyManager {
             .current_dir(&self.inner.app_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // Safety net so an aborted supervise_child task (e.g. process exit
+            // without a graceful manager.stop()) doesn't leak the proxy child.
+            // The normal stop path still drives a SIGINT / CTRL_BREAK first
+            // and only falls back to start_kill on grace-period expiry.
+            .kill_on_drop(true);
         configure_child_process(&mut command);
         let mut child = command.spawn().map_err(StartError::Spawn)?;
         let pid = child.id();
