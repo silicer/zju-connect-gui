@@ -1,0 +1,12 @@
+<div id="captcha-modal" class="modal open">
+    <div class="modal-content">
+        <h3>{{ title }}</h3>
+        <p>{{ prompt }}</p>
+        <div style="text-align: center;">
+            <img src="data:image/png;base64,{{ base64_image }}" class="captcha-img" onclick="onCaptchaClick(event)" alt="Captcha">
+        </div>
+        <p style="text-align: center; margin-top: 1rem;">
+            <button type="button" class="secondary" onclick="document.getElementById('captcha-modal').classList.remove('open')">Cancel</button>
+        </p>
+    </div>
+</div>

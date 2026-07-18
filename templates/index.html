@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZJU Connect GUI</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <script src="/static/htmx.min.js"></script>
+    <script src="/static/sse.js"></script>
+    <style>
+        .container { max-width: 800px; margin-top: 2rem; }
+        .logs-container {
+            height: 300px;
+            overflow-y: auto;
+            background: var(--pico-background-color);
+            border: 1px solid var(--pico-form-element-border-color);
+            border-radius: var(--pico-border-radius);
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.875em;
+            white-space: pre-wrap;
+        }
+        .log-entry { margin: 0; padding: 2px 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+        .log-entry:last-child { border-bottom: none; }
+        #status-bar { margin-top: 1rem; font-weight: bold; }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+        .modal.open { display: flex; align-items: center; justify-content: center; }
+        .modal-content {
+            background: var(--pico-background-color);
+            padding: 2rem;
+            border-radius: var(--pico-border-radius);
+            max-width: 500px;
+            width: 100%;
+        }
+        .captcha-img { max-width: 100%; cursor: crosshair; }
+    </style>
+</head>
+<body hx-ext="sse" sse-connect="/events">
+    <main class="container">
+        <h1>ZJU Connect GUI</h1>
+
+        <article>
+            <header>Settings</header>
+            <form hx-post="/settings" hx-swap="none">
+                <div class="grid">
+                    <label>
+                        Username
+                        <input type="text" name="username" value="{{ settings.username }}" required>
+                    </label>
+                    <label>
+                        Password
+                        <input type="password" name="password" value="{{ settings.password }}" required>
+                    </label>
+                </div>
+                <div class="grid">
+                    <label>
+                        SOCKS Bind
+                        <input type="text" name="socks_bind" value="{{ settings.socks_bind }}" required>
+                    </label>
+                    <label>
+                        TUN Gateway
+                        <input type="text" name="tun_gateway" value="">
+                    </label>
+                </div>
+                <div class="grid">
+                    <label>
+                        <input type="checkbox" name="tun_mode" {% if settings.tun_mode %}checked{% endif %}>
+                        Enable TUN Mode
+                    </label>
+                    <label>
+                        <input type="checkbox" name="udp_proxy" >
+                        Enable UDP Proxy
+                    </label>
+                </div>
+                <button type="submit" class="secondary">Save Settings</button>
+            </form>
+        </article>
+
+        <div id="controls" class="grid" style="margin-bottom: 1rem;">
+            <button hx-post="/start" hx-swap="none" id="start-btn" {% if running %}disabled{% endif %}>Start</button>
+            <button hx-post="/stop" hx-swap="none" id="stop-btn" class="secondary" {% if !running %}disabled{% endif %}>Stop</button>
+        </div>
+
+        <div id="status-bar">
+            Status: <span id="status-text">{{ status_message }}</span>
+        </div>
+
+        <article>
+            <header>Logs</header>
+            <div id="logs" class="logs-container" sse-swap="log" hx-swap="beforeend">
+                {% for log in logs %}
+                    <div class="log-entry">{{ log }}</div>
+                {% endfor %}
+            </div>
+        </article>
+    </main>
+
+    <!-- Modals placeholder -->
+    <div id="modal-container" sse-swap="modal"></div>
+
+    <script>
+        // Auto-scroll logs
+        document.body.addEventListener('htmx:afterSettle', function(evt) {
+            if (evt.target.id === 'logs') {
+                evt.target.scrollTop = evt.target.scrollHeight;
+            }
+        });
+
+        // Captcha click handling
+        function onCaptchaClick(event) {
+            const img = event.target;
+            const rect = img.getBoundingClientRect();
+            // Scale coordinates to the natural image size
+            const scaleX = img.naturalWidth / rect.width;
+            const scaleY = img.naturalHeight / rect.height;
+            const x = Math.round((event.clientX - rect.left) * scaleX);
+            const y = Math.round((event.clientY - rect.top) * scaleY);
+
+            htmx.ajax('POST', '/submit_captcha', {
+                values: { x: x, y: y },
+                target: '#modal-container',
+                swap: 'innerHTML'
+            });
+            document.getElementById('captcha-modal').classList.remove('open');
+        }
+
+        // Keep SSE connection alive across page reloads/modals if needed,
+        // HTMX hx-ext="sse" handles most of this automatically.
+    </script>
+</body>
+</html>

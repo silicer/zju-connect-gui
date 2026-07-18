@@ -1,493 +1,97 @@
-//! Main coordinator: ties Slint UI to ProxyManager, settings/pending stores,
-//! and the relaunch-args / elevation handshake.
-
-use std::path::PathBuf;
-use std::rc::Rc;
+use axum::serve;
 use std::sync::Arc;
-use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel, Weak};
-use tokio::runtime::Runtime;
-use tokio::sync::Notify;
-
-use crate::tray::TrayController;
-use crate::ui_glue::CapturingBridge;
-use crate::{AppWindow, CaptchaPoint};
-
-use zju_connect_gui::backend::launch_options::LaunchOptions;
+use crate::web::server::{create_router, AppState};
 use zju_connect_gui::backend::paths::resolve_app_dir;
-use zju_connect_gui::backend::pending_connect_store::PendingConnectStore;
-use zju_connect_gui::backend::platform;
-use zju_connect_gui::backend::proxy::{ProxyManager, ProxyManagerConfig};
+use zju_connect_gui::backend::proxy::ProxyManager;
 use zju_connect_gui::backend::relaunch_args::ElevatedRelaunchArgs;
 use zju_connect_gui::backend::settings_store::UserSettingsStore;
 
-const PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);
-const MAX_LOG_ENTRIES: usize = 1000;
-
 pub struct App {
-    pub window: AppWindow,
-    pub _manager: ProxyManager,
-    pub _settings: Arc<UserSettingsStore>,
-    pub _runtime: Runtime,
-    pub _tray: Option<TrayController>,
+    manager: ProxyManager,
+    settings: Arc<Mutex<UserSettingsStore>>,
+    #[allow(dead_code)]
+    runtime: tokio::runtime::Runtime,
+    #[allow(dead_code)]
+    relaunch: ElevatedRelaunchArgs,
+    broadcaster: async_broadcast::Sender<zju_connect_gui::backend::proxy::ProxyEvent>,
+    receiver: async_broadcast::Receiver<zju_connect_gui::backend::proxy::ProxyEvent>,
 }
 
 impl App {
-    pub fn new(args: ElevatedRelaunchArgs) -> Result<Self, AppError> {
-        let app_dir = resolve_app_dir().map_err(AppError::ResolveAppDir)?;
+    pub async fn new(relaunch: ElevatedRelaunchArgs) -> Result<Self, Box<dyn std::error::Error>> {
+        let app_dir = resolve_app_dir()?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .build()
-            .map_err(AppError::Runtime)?;
+            .build()?;
 
-        let settings = Arc::new(UserSettingsStore::new(&app_dir));
-        let pending = Arc::new(PendingConnectStore::new(&app_dir));
+        let settings = Arc::new(Mutex::new(UserSettingsStore::new(&app_dir)));
 
-        let saved = settings.load().unwrap_or_else(|err| {
-            log::warn!("settings load failed: {err}; using defaults");
-            zju_connect_gui::backend::settings_store::default_launch_options()
+        let (mut sender, receiver) = async_broadcast::broadcast(100);
+        sender.set_overflow(true);
+
+        let bridge = Arc::new(WebBridge {
+            sender: sender.clone(),
         });
-
-        let cfg = ProxyManagerConfig::default();
-        let manager = ProxyManager::with_config(app_dir.clone(), runtime.handle().clone(), cfg);
-
-        let window = AppWindow::new().map_err(AppError::Window)?;
-
-        // Install the log + captcha-points models on the window so the bridge can
-        // mutate them via downcast in the event handler.
-        let log_model: Rc<VecModel<SharedString>> = Rc::new(VecModel::default());
-        window.set_logs(ModelRc::from(log_model.clone()));
-        let captcha_model: Rc<VecModel<CaptchaPoint>> = Rc::new(VecModel::default());
-        window.set_captcha_points(ModelRc::from(captcha_model.clone()));
-
-        apply_options_to_window(&window, &saved);
-
-        let persist_signal = Arc::new(Notify::new());
-
-        manager.set_ui(Arc::new(CapturingBridge::new(
-            window.as_weak(),
-            MAX_LOG_ENTRIES,
-        )));
-
-        wire_ui_callbacks(
-            &window,
-            manager.clone(),
-            settings.clone(),
-            persist_signal.clone(),
-            captcha_model.clone(),
-            log_model.clone(),
-            app_dir.clone(),
-        );
-
-        spawn_persist_debounce(
-            runtime.handle().clone(),
-            window.as_weak(),
-            settings.clone(),
-            persist_signal.clone(),
-        );
-
-        if args.resume_pending_connect {
-            try_resume_pending_connect(
-                &runtime,
-                &pending,
-                &settings,
-                &manager,
-                &window,
-                args.wait_parent_pid,
-            );
-        }
-
-        // Tray creation is best-effort: on Linux without libayatana-appindicator
-        // it will fail, and we'd rather start the GUI without a tray than abort.
-        let tray = match TrayController::new(window.as_weak()) {
-            Ok(t) => Some(t),
-            Err(err) => {
-                log::warn!("tray icon disabled: {err}");
-                None
-            }
-        };
-
-        wire_quit_and_close(
-            &window,
-            manager.clone(),
-            runtime.handle().clone(),
-            tray.is_some(),
-        );
+        let manager = ProxyManager::new(app_dir.clone(), runtime.handle().clone());
+        manager.set_ui(bridge);
 
         Ok(Self {
-            window,
-            _manager: manager,
-            _settings: settings,
-            _runtime: runtime,
-            _tray: tray,
+            manager,
+            settings,
+            runtime,
+            relaunch,
+            broadcaster: sender,
+            receiver,
         })
     }
 
-    pub fn run(self) -> Result<(), AppError> {
-        // Show the window, then drive the event loop with the
-        // `_until_quit` variant so it stays alive across hide/close — only
-        // an explicit `slint::quit_event_loop()` (issued by `request-quit`
-        // in `wire_quit_and_close`) tears it down. Without this, hiding
-        // the only window triggers Slint's "quit on last window closed"
-        // default and the tray immediately stops responding.
-        self.window.show().map_err(AppError::Window)?;
-        slint::run_event_loop_until_quit().map_err(AppError::Window)?;
+    pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        let state = AppState {
+            manager: self.manager.clone(),
+            settings_store: self.settings.clone(),
+            broadcaster: self.broadcaster.clone(),
+            receiver: self.receiver.clone(),
+        };
+
+        let app = create_router(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let url = format!("http://127.0.0.1:{}", port);
+
+        log::info!("Server listening on {}", url);
+        open::that(&url)?;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let _tray = crate::tray::TrayController::new(url.clone(), tx.clone()).ok();
+
+        tokio::spawn(async move {
+            serve(listener, app).await.unwrap();
+            tx.send(()).await.unwrap();
+        });
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = rx.recv() => {}
+        }
+
         Ok(())
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum AppError {
-    #[error("failed to resolve app directory: {0}")]
-    ResolveAppDir(std::io::Error),
-    #[error("failed to create tokio runtime: {0}")]
-    Runtime(std::io::Error),
-    #[error("failed to create application window: {0}")]
-    Window(slint::PlatformError),
+pub struct WebBridge {
+    sender: async_broadcast::Sender<zju_connect_gui::backend::proxy::ProxyEvent>,
 }
 
-/// Wire `request-quit` (graceful proxy stop → quit event loop) and the
-/// window's close button. The close button hides the window when a tray is
-/// available; without a tray it routes through `request-quit` so the user
-/// still has an escape hatch.
-fn wire_quit_and_close(
-    window: &AppWindow,
-    manager: ProxyManager,
-    runtime: tokio::runtime::Handle,
-    has_tray: bool,
-) {
-    {
-        let manager = manager.clone();
-        let runtime = runtime.clone();
-        window.on_request_quit(move || {
-            let manager = manager.clone();
-            runtime.spawn(async move {
-                if manager.is_running() {
-                    log::info!("graceful quit: stopping proxy before exit");
-                    if let Err(err) = manager.stop() {
-                        log::warn!("graceful quit: manager.stop returned {err}");
-                    }
-                    // Wait for the supervisor to actually clear child_pid; cap
-                    // at 7 seconds so a stuck child can't pin the GUI forever.
-                    for _ in 0..70 {
-                        if manager.snapshot().child_pid.is_none() {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                }
-                let _ = slint::invoke_from_event_loop(|| {
-                    let _ = slint::quit_event_loop();
-                });
-            });
-        });
+impl zju_connect_gui::backend::proxy::UiBridge for WebBridge {
+    fn emit_event(&self, event: zju_connect_gui::backend::proxy::ProxyEvent) {
+        let _ = self.sender.try_broadcast(event);
     }
 
-    let weak = window.as_weak();
-    window.window().on_close_requested(move || {
-        if has_tray {
-            // Tray is available — hide instead of quitting so the user can
-            // re-open via tray click. The "退出" tray menu invokes
-            // `request-quit` to actually terminate.
-            slint::CloseRequestResponse::HideWindow
-        } else {
-            // No tray escape hatch — route through `request-quit` so we still
-            // do graceful proxy shutdown before tearing down the runtime.
-            if let Some(w) = weak.upgrade() {
-                w.invoke_request_quit();
-            }
-            slint::CloseRequestResponse::HideWindow
-        }
-    });
-}
-
-fn apply_options_to_window(window: &AppWindow, options: &LaunchOptions) {
-    window.set_username(SharedString::from(options.username.as_str()));
-    window.set_password(SharedString::from(options.password.as_str()));
-    window.set_socks_bind(SharedString::from(options.socks_bind.as_str()));
-    window.set_http_bind(SharedString::from(options.http_bind.as_str()));
-    window.set_proxy_only(!options.tun_mode);
-    window.set_debug_dump(options.debug_dump);
-    window.set_eip_browser_program(SharedString::from(options.eip_browser_program.as_str()));
-    window.set_eip_browser_args(SharedString::from(options.eip_browser_args.join("\n")));
-}
-
-fn read_options_from_window(window: &AppWindow) -> LaunchOptions {
-    use zju_connect_gui::backend::launch_options::normalize_launch_options;
-    // The Slint side only owns the user-tunable fields. Normalization fills in the
-    // fixed defaults (protocol=atrust, server, port, …) that the original Go code
-    // re-applied on every load/save, so subsequent `validate()` and `start()` calls
-    // see a complete, well-formed LaunchOptions.
-    normalize_launch_options(LaunchOptions {
-        username: window.get_username().to_string(),
-        password: window.get_password().to_string(),
-        socks_bind: window.get_socks_bind().to_string(),
-        http_bind: window.get_http_bind().to_string(),
-        tun_mode: !window.get_proxy_only(),
-        debug_dump: window.get_debug_dump(),
-        eip_browser_program: window.get_eip_browser_program().to_string(),
-        eip_browser_args: parse_args_textarea(&window.get_eip_browser_args()),
-        ..LaunchOptions::default()
-    })
-}
-
-fn parse_args_textarea(value: &str) -> Vec<String> {
-    value
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-fn wire_ui_callbacks(
-    window: &AppWindow,
-    manager: ProxyManager,
-    settings: Arc<UserSettingsStore>,
-    persist_signal: Arc<Notify>,
-    captcha_model: Rc<VecModel<CaptchaPoint>>,
-    log_model: Rc<VecModel<SharedString>>,
-    app_dir: PathBuf,
-) {
-    // start
-    {
-        let manager = manager.clone();
-        let settings = settings.clone();
-        let weak = window.as_weak();
-        let app_dir = app_dir.clone();
-        window.on_start(move || {
-            let Some(w) = weak.upgrade() else { return };
-            let options = read_options_from_window(&w);
-
-            if let Err(err) = options.validate() {
-                w.set_status_message(SharedString::from(format!("{err}")));
-                return;
-            }
-
-            if let Err(err) = settings.save(options.clone()) {
-                log::warn!("settings save before start failed: {err}");
-            }
-
-            #[cfg(target_os = "windows")]
-            if options.tun_mode && !platform::is_process_elevated() {
-                w.set_status_message(SharedString::from("正在请求管理员权限..."));
-                use zju_connect_gui::backend::relaunch_args::build_elevated_relaunch_args;
-                let pending = PendingConnectStore::new(&app_dir);
-                if let Err(err) = pending.mark_resume_connect() {
-                    log::warn!("pending mark failed: {err}");
-                }
-                let parent_pid = std::process::id();
-                if let Err(err) =
-                    platform::relaunch_self_elevated(&build_elevated_relaunch_args(parent_pid))
-                {
-                    w.set_status_message(SharedString::from(format!("提权失败：{err}")));
-                    return;
-                }
-                slint::quit_event_loop().ok();
-                return;
-            }
-            // suppress unused warning on non-windows
-            let _ = &app_dir;
-
-            w.set_status_message(SharedString::from("正在启动..."));
-            if let Err(err) = manager.start(options) {
-                w.set_status_message(SharedString::from(format!("启动失败：{err}")));
-            }
-        });
-    }
-
-    // stop
-    {
-        let manager = manager.clone();
-        let weak = window.as_weak();
-        window.on_stop(move || {
-            let Some(w) = weak.upgrade() else { return };
-            w.set_status_message(SharedString::from("正在停止..."));
-            if let Err(err) = manager.stop() {
-                w.set_status_message(SharedString::from(format!("停止失败：{err}")));
-            }
-        });
-    }
-
-    // submit-input
-    {
-        let manager = manager.clone();
-        let weak = window.as_weak();
-        let captcha_model = captcha_model.clone();
-        window.on_submit_input(move |value| {
-            let Some(w) = weak.upgrade() else { return };
-            if let Err(err) = manager.submit_input(value.as_str()) {
-                w.set_status_message(SharedString::from(format!("提交失败：{err}")));
-                return;
-            }
-            w.set_modal_open(false);
-            w.set_modal_input(SharedString::from(""));
-            captcha_model.set_vec(Vec::<CaptchaPoint>::new());
-        });
-    }
-
-    // submit-captcha
-    {
-        let manager = manager.clone();
-        let weak = window.as_weak();
-        let captcha_model = captcha_model.clone();
-        window.on_submit_captcha(move |natural_w, natural_h| {
-            let Some(w) = weak.upgrade() else { return };
-            if natural_w <= 0 || natural_h <= 0 {
-                w.set_status_message(SharedString::from("验证码尺寸未就绪，请重新点击验证码"));
-                return;
-            }
-            let points: Vec<CaptchaPoint> = captcha_model.iter().collect();
-            if points.is_empty() {
-                w.set_status_message(SharedString::from("请先点击验证码图片"));
-                return;
-            }
-            let coords: Vec<[i32; 2]> = points.iter().map(|p| [p.x, p.y]).collect();
-            let payload = serde_json::json!({
-                "coordinates": coords,
-                "width": natural_w,
-                "height": natural_h,
-            });
-            if let Err(err) = manager.submit_input(&payload.to_string()) {
-                w.set_status_message(SharedString::from(format!("提交失败：{err}")));
-                return;
-            }
-            w.set_modal_open(false);
-            captcha_model.set_vec(Vec::<CaptchaPoint>::new());
-        });
-    }
-
-    // cancel-modal
-    {
-        let weak = window.as_weak();
-        let captcha_model = captcha_model.clone();
-        window.on_cancel_modal(move || {
-            let Some(w) = weak.upgrade() else { return };
-            w.set_modal_open(false);
-            w.set_modal_input(SharedString::from(""));
-            captcha_model.set_vec(Vec::<CaptchaPoint>::new());
-        });
-    }
-
-    // clear-logs
-    {
-        let log_model = log_model.clone();
-        window.on_clear_logs(move || {
-            log_model.set_vec(Vec::<SharedString>::new());
-        });
-    }
-
-    // pick-eip-browser
-    {
-        let weak = window.as_weak();
-        window.on_pick_eip_browser(move || {
-            let Some(w) = weak.upgrade() else { return };
-            w.set_status_message(SharedString::from(
-                "请直接粘贴浏览器可执行文件路径（暂未实现选择器）",
-            ));
-        });
-    }
-
-    // clear-eip-browser
-    {
-        let weak = window.as_weak();
-        window.on_clear_eip_browser(move || {
-            let Some(w) = weak.upgrade() else { return };
-            w.set_eip_browser_program(SharedString::from(""));
-        });
-    }
-
-    // persist-options
-    {
-        let signal = persist_signal.clone();
-        window.on_persist_options(move || {
-            signal.notify_one();
-        });
-    }
-
-    // captcha point management
-    {
-        let captcha_model = captcha_model.clone();
-        window.on_add_captcha_point(move |x, y| {
-            captcha_model.push(CaptchaPoint { x, y });
-        });
-    }
-    {
-        let captcha_model = captcha_model.clone();
-        window.on_remove_last_captcha_point(move || {
-            let len = captcha_model.row_count();
-            if len > 0 {
-                captcha_model.remove(len - 1);
-            }
-        });
-    }
-    {
-        let captcha_model = captcha_model;
-        window.on_clear_captcha_points(move || {
-            captcha_model.set_vec(Vec::<CaptchaPoint>::new());
-        });
-    }
-}
-
-/// Persist debounce: notify on each option change, sleep PERSIST_DEBOUNCE, then
-/// snapshot the window state and write it.
-fn spawn_persist_debounce(
-    handle: tokio::runtime::Handle,
-    weak: Weak<AppWindow>,
-    settings: Arc<UserSettingsStore>,
-    signal: Arc<Notify>,
-) {
-    handle.spawn(async move {
-        loop {
-            signal.notified().await;
-            tokio::time::sleep(PERSIST_DEBOUNCE).await;
-            // Snapshot must happen on the UI thread.
-            let weak = weak.clone();
-            let settings = settings.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                let Some(w) = weak.upgrade() else { return };
-                let options = read_options_from_window(&w);
-                if let Err(err) = settings.save(options) {
-                    log::warn!("autosave failed: {err}");
-                }
-            });
-        }
-    });
-}
-
-fn try_resume_pending_connect(
-    runtime: &Runtime,
-    pending: &Arc<PendingConnectStore>,
-    settings: &Arc<UserSettingsStore>,
-    manager: &ProxyManager,
-    window: &AppWindow,
-    parent_pid: u32,
-) {
-    if parent_pid > 0 {
-        let _ = runtime.block_on(async move {
-            tokio::task::spawn_blocking(move || {
-                let _ = platform::wait_for_process_exit(parent_pid, Duration::from_secs(15));
-            })
-            .await
-        });
-    }
-
-    let resume = match pending.has_resume_connect() {
-        Ok(flag) => flag,
-        Err(err) => {
-            log::warn!("pending resume read failed: {err}");
-            false
-        }
-    };
-    let _ = pending.clear();
-    if !resume {
-        return;
-    }
-
-    let options = settings.load().unwrap_or_default();
-    apply_options_to_window(window, &options);
-    window.set_status_message(SharedString::from("已切换到管理员模式，正在恢复连接..."));
-    if let Err(err) = manager.start(options) {
-        window.set_status_message(SharedString::from(format!("恢复连接失败：{err}")));
+    fn show_window(&self) {
+        // Open browser again if possible
     }
 }

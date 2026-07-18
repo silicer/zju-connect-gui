@@ -1,0 +1,14 @@
+<div id="input-modal" class="modal open">
+    <div class="modal-content">
+        <h3>{{ title }}</h3>
+        <p>{{ prompt }}</p>
+        <form hx-post="/submit_input" hx-target="#modal-container" hx-swap="innerHTML">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            <input type="text" name="input" required autofocus>
+            <div class="grid">
+                <button type="submit">Submit</button>
+                <button type="button" class="secondary" onclick="document.getElementById('input-modal').classList.remove('open')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
