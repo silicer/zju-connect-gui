@@ -67,6 +67,6 @@ ARCH=x86_64 "$LINUXDEPLOY" \
   --output appimage
 
 # linuxdeploy emits the .AppImage in CWD
-mv "${APP_NAME}-x86_64.AppImage" "$REPO_ROOT/${APP_NAME}-x86_64.AppImage"
+mv "ZJU_Connect_GUI-x86_64.AppImage" "$REPO_ROOT/${APP_NAME}-x86_64.AppImage"
 echo "==> ${APP_NAME}-x86_64.AppImage"
 ls -lh "$REPO_ROOT/${APP_NAME}-x86_64.AppImage"
