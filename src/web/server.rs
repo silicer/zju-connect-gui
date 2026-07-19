@@ -59,7 +59,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/stop", post(stop_proxy))
         .route("/submit_input", post(submit_input))
         .route("/submit_captcha", post(submit_captcha))
-        .nest_service("/static", ServeDir::new("static"))
+        .nest_service("/static", ServeDir::new("static")) // Ensure this points to correct location
         .with_state(state)
 }
 
