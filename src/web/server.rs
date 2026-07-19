@@ -93,13 +93,8 @@ struct SettingsForm {
     username: String,
     password: String,
     socks_bind: String,
-    #[allow(dead_code)]
-    tun_gateway: Option<String>,
     #[serde(default)]
     tun_mode: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    udp_proxy: Option<String>,
 }
 
 async fn save_settings(

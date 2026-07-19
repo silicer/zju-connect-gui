@@ -16,9 +16,12 @@ impl TrayController {
             icon_data: build_icon_data()?,
         };
 
-        let handle = tray
-            .spawn()
-            .map_err(|err| TrayError::Build(err.to_string()))?;
+        let handle = std::thread::spawn(move || {
+            tray.spawn()
+                .map_err(|err| TrayError::Build(err.to_string()))
+        })
+        .join()
+        .unwrap()?;
 
         Ok(Self { _handle: handle })
     }
