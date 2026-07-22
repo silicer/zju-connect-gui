@@ -359,10 +359,10 @@ impl ProxyManager {
 
         // On Linux, check for root if ProxyBridge is active.
         #[cfg(target_os = "linux")]
-        if options.tun_mode || pb_is_active(&options) {
-            if !crate::backend::platform::is_process_elevated() {
-                return Err(StartError::NeedsElevation);
-            }
+        if (options.tun_mode || pb_is_active(&options))
+            && !crate::backend::platform::is_process_elevated()
+        {
+            return Err(StartError::NeedsElevation);
         }
 
         // Acquire session_active and bump generation atomically.
