@@ -4,7 +4,6 @@
 # Prerequisites:
 #   - cargo (stable rust toolchain pinned by rust-toolchain.toml)
 #   - linuxdeploy (downloaded automatically into ./build/tools/ if missing)
-#   - libxkbcommon, fontconfig system libraries (slint runtime deps)
 #
 # Output: build/AppDir/ + zju-connect-gui-x86_64.AppImage at the repo root.
 

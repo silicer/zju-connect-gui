@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZJU Connect</title>
+<link rel="stylesheet" href="/static/pico.min.css">
+<style>
+  :root { --pico-font-size: 93%; }
+  body { min-height: 100vh; }
+  .container { max-width: 700px; margin: 0 auto; padding: 1rem; }
+  [role="tablist"] { margin-bottom: 0; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; padding: 1rem 0; }
+  .status-pill {
+    display: inline-block; padding: 0.2rem 0.8rem; border-radius: 1rem;
+    font-size: 0.85rem; font-weight: 600;
+  }
+  .status-stopped { background: var(--pico-muted-color); color: white; }
+  .status-connecting { background: var(--pico-color-amber-400); color: black; }
+  .status-connected { background: var(--pico-color-jade-400); color: black; }
+  .log-viewer {
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
+    padding: 0.5rem; height: 300px; overflow-y: auto;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.82rem; white-space: pre-wrap; word-break: break-all;
+  }
+  .log-entry { border-bottom: 1px solid var(--pico-muted-border-color); padding: 1px 0; }
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-card {
+    background: var(--pico-card-background-color);
+    border-radius: var(--pico-border-radius);
+    padding: 1.5rem; max-width: 420px; width: 90%;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }
+  .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+  .captcha-img-container { position: relative; display: inline-block; cursor: crosshair; }
+  .captcha-img-container img { max-width: 100%; border-radius: 4px; }
+  .captcha-marker {
+    position: absolute; width: 18px; height: 18px;
+    background: var(--pico-color-red-500); color: white;
+    border-radius: 50%; font-size: 11px; font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    transform: translate(-50%, -50%); pointer-events: none;
+  }
+  .captcha-tools { margin-top: 0.3rem; display: flex; gap: 0.3rem; }
+</style>
+</head>
+<body>
+<div class="container" x-data="app">
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">
+    <h2 style="margin:0">ZJU Connect</h2>
+    <div style="display:flex;align-items:center;gap:0.5rem">
+      <span class="status-pill"
+        :class="{
+          'status-stopped': !status.running,
+          'status-connecting': status.running && !status.ready,
+          'status-connected': status.running && status.ready
+        }"
+        x-text="!status.running ? '未连接' : (status.ready ? '已连接' : '连接中...')">未连接</span>
+      <span x-show="statusMessage" x-text="statusMessage" style="font-size:0.8rem;color:var(--pico-muted-color)"></span>
+    </div>
+  </div>
+
+  <!-- Tab bar -->
+  <div role="tablist">
+    <button role="tab" :aria-selected="tab==='settings'" @click="tab='settings'">设置</button>
+    <button role="tab" :aria-selected="tab==='logs'" @click="tab='logs'">日志</button>
+  </div>
+
+  <!-- Settings tab -->
+  <div class="tab-content" :class="{ active: tab === 'settings' }">
+    <div class="grid" style="margin-top:0.5rem">
+      <label>
+        用户名
+        <input type="text" x-model="settings.username" placeholder="ZJU 学号/工号" autocomplete="username">
+      </label>
+      <label>
+        密码
+        <input type="password" x-model="settings.password" placeholder="ZJU 密码" autocomplete="current-password">
+      </label>
+    </div>
+    <div class="grid">
+      <label>
+        SOCKS5 监听
+        <input type="text" x-model="settings.socksBind" placeholder="127.0.0.1:1080">
+      </label>
+      <label>
+        HTTP 监听
+        <input type="text" x-model="settings.httpBind" placeholder="127.0.0.1:8888">
+      </label>
+    </div>
+    <label>
+      <input type="checkbox" x-model="proxyOnly">
+      仅代理（不启用全局 VPN）
+    </label>
+    <label>
+      <input type="checkbox" x-model="settings.debugDump">
+      调试转储
+    </label>
+    <details>
+      <summary>EIP 浏览器（可选）</summary>
+      <label>
+        浏览器路径
+        <input type="text" x-model="settings.eipBrowserProgram" placeholder="C:\Program Files\...\chrome.exe">
+      </label>
+      <label>
+        浏览器参数（每行一个）
+        <textarea x-model="eipBrowserArgsText" rows="3" placeholder="--kiosk&#10;--new-window"></textarea>
+      </label>
+    </details>
+
+    <div style="margin-top:1rem;display:flex;gap:0.5rem">
+      <button
+        x-show="!status.running"
+        @click="onStart()"
+        :aria-busy="starting"
+        :disabled="starting"
+        x-text="starting ? '启动中...' : '立即连接'">立即连接</button>
+      <button
+        x-show="status.running"
+        class="secondary"
+        @click="onStop()"
+        :aria-busy="stopping"
+        :disabled="stopping"
+        x-text="stopping ? '停止中...' : '断开连接'">断开连接</button>
+    </div>
+  </div>
+
+  <!-- Logs tab -->
+  <div class="tab-content" :class="{ active: tab === 'logs' }">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:0.3rem">
+      <button class="outline secondary small" @click="logs = []">清空</button>
+    </div>
+    <div class="log-viewer" x-ref="logViewer">
+      <template x-for="(line, i) in logs" :key="i">
+        <div class="log-entry" x-text="line"></div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Input Modal -->
+  <div class="modal-overlay" :class="{ open: modal.show === 'input' }">
+    <div class="modal-card">
+      <h3 x-text="modal.title">输入需求</h3>
+      <div class="modal-body">
+        <p x-text="modal.prompt" style="margin-bottom:0.5rem;color:var(--pico-muted-color)"></p>
+        <input
+          :type="modal.inputKind === 'sms' ? 'tel' : 'text'"
+          x-model="modal.inputValue"
+          @keydown.enter="onSubmitInput()"
+          :placeholder="modal.inputKind === 'sms' ? '短信验证码' : ''"
+          autofocus>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" @click="onCancelModal()">取消</button>
+        <button @click="onSubmitInput()" :disabled="!modal.inputValue">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Captcha Modal -->
+  <div class="modal-overlay" :class="{ open: modal.show === 'captcha' }">
+    <div class="modal-card" style="max-width:560px">
+      <h3 x-text="modal.title">图形验证码</h3>
+      <div class="modal-body">
+        <p x-text="modal.prompt" style="margin-bottom:0.5rem;color:var(--pico-muted-color)"></p>
+        <div class="captcha-img-container" @click="onCaptchaClick($event)" x-ref="captchaContainer">
+          <img :src="'data:image/png;base64,' + modal.captchaBase64" x-ref="captchaImg" @load="onCaptchaImgLoad()">
+          <template x-for="(pt, i) in captchaPoints" :key="i">
+            <div class="captcha-marker" :style="'left:' + pt.x + 'px;top:' + pt.y + 'px'" x-text="i + 1"></div>
+          </template>
+        </div>
+        <div class="captcha-tools">
+          <button class="outline secondary small" @click="captchaPoints.pop()" :disabled="!captchaPoints.length">撤销</button>
+          <button class="outline secondary small" @click="captchaPoints = []" :disabled="!captchaPoints.length">清除</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" @click="onCancelModal()">取消</button>
+        <button @click="onSubmitCaptcha()" :disabled="!captchaPoints.length">确认</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('app', () => ({
+    tab: 'settings',
+    status: { running: false, ready: false, state: 'stopped' },
+    statusMessage: '',
+    starting: false,
+    stopping: false,
+    logs: [],
+    settings: {
+      username: '', password: '',
+      socksBind: '127.0.0.1:1080', httpBind: '127.0.0.1:8888',
+      tunMode: true, debugDump: false,
+      eipBrowserProgram: '', eipBrowserArgs: [],
+    },
+    get proxyOnly() {
+      return !this.settings.tunMode;
+    },
+    set proxyOnly(v) {
+      this.settings.tunMode = !v;
+    },
+    get eipBrowserArgsText() {
+      return (this.settings.eipBrowserArgs || []).join('\n');
+    },
+    set eipBrowserArgsText(v) {
+      this.settings.eipBrowserArgs = v.split('\n').map(s => s.trim()).filter(s => s);
+    },
+    modal: {
+      show: null,
+      title: '',
+      prompt: '',
+      inputKind: '',
+      inputValue: '',
+      captchaBase64: '',
+    },
+    captchaPoints: [],
+    captchaNaturalW: 0,
+    captchaNaturalH: 0,
+
+    async init() {
+      try {
+        const r = await fetch('/api/settings');
+        if (r.ok) {
+          const opts = await r.json();
+          Object.assign(this.settings, opts);
+        }
+      } catch (e) {}
+
+      try {
+        const r = await fetch('/api/status');
+        if (r.ok) {
+          const s = await r.json();
+          this.status.running = s.sessionActive;
+          this.status.ready = s.ready;
+        }
+      } catch (e) {}
+
+      this.connectSse();
+    },
+
+    connectSse() {
+      const es = new EventSource('/api/events');
+      es.addEventListener('log', (e) => this.appendLog(JSON.parse(e.data).line));
+      es.addEventListener('state', (e) => {
+        const d = JSON.parse(e.data);
+        this.status.running = d.running;
+        this.status.ready = d.state === 'connected';
+        this.status.state = d.state;
+        if (d.message) this.statusMessage = d.message;
+        else if (d.awaiting) this.statusMessage = '等待输入: ' + d.awaiting;
+        else if (d.state === 'stopped' && !d.running) this.statusMessage = '';
+        else if (d.state === 'connected') this.statusMessage = '';
+        this.starting = false;
+        this.stopping = false;
+      });
+      es.addEventListener('need_input', (e) => {
+        const d = JSON.parse(e.data);
+        this.modal = {
+          show: 'input', title: d.kind === 'sms' ? '短信验证码' : '输入需求',
+          prompt: d.prompt, inputKind: d.kind, inputValue: '', captchaBase64: '',
+        };
+        this.statusMessage = '';
+      });
+      es.addEventListener('need_captcha', (e) => {
+        const d = JSON.parse(e.data);
+        this.modal = {
+          show: 'captcha', title: '图形验证码',
+          prompt: '请在图片上按顺序点击对应位置，然后提交',
+          inputKind: '', inputValue: '', captchaBase64: d.base64,
+        };
+        this.captchaPoints = []; this.captchaNaturalW = 0; this.captchaNaturalH = 0;
+        this.statusMessage = '';
+      });
+      es.addEventListener('error', (e) => {
+        const d = JSON.parse(e.data);
+        this.statusMessage = d.message;
+        this.starting = false; this.stopping = false;
+      });
+      es.onerror = () => {
+        setTimeout(() => {
+          if (es.readyState === EventSource.CLOSED)
+            this.statusMessage = '与后台连接已断开，请刷新页面';
+        }, 5000);
+      };
+    },
+
+    appendLog(line) {
+      this.logs.push(line);
+      if (this.logs.length > 1000) this.logs.shift();
+      this.$nextTick(() => {
+        const el = this.$refs.logViewer;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
+
+    async onStart() {
+      if (this.starting) return;
+      this.starting = true;
+      this.statusMessage = '正在启动...';
+      try { await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(this.settings) }); } catch(e) {}
+      try {
+        const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
+        if (r.status === 412) {
+          this.statusMessage = '全局模式需要管理员权限，正在请求提权...';
+          const r2 = await fetch('/api/elevate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
+          if (!r2.ok) {
+            const msg = await r2.text();
+            this.statusMessage = '提权失败：' + msg;
+          } else {
+            this.statusMessage = '已请求管理员权限，新窗口启动后将自动连接。页面即将刷新...';
+          }
+          this.starting = false;
+        } else if (!r.ok) {
+          const msg = await r.text();
+          this.statusMessage = '启动失败：' + msg;
+          this.starting = false;
+        }
+      } catch (e) {
+        this.statusMessage = '启动失败：' + e.message;
+        this.starting = false;
+      }
+    },
+
+    async onStop() {
+      if (this.stopping) return;
+      this.stopping = true; this.statusMessage = '正在停止...';
+      try { await fetch('/api/stop', { method: 'POST' }); }
+      catch (e) { this.statusMessage = '停止失败：' + e.message; this.stopping = false; }
+    },
+
+    async onSubmitInput() {
+      if (!this.modal.inputValue) return;
+      try { await fetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ value: this.modal.inputValue }) }); }
+      catch (e) { this.statusMessage = '提交失败：' + e.message; }
+      this.modal.show = null; this.modal.inputValue = '';
+    },
+
+    onCancelModal() { this.modal.show = null; this.captchaPoints = []; },
+
+    onCaptchaClick(event) {
+      const container = this.$refs.captchaContainer, img = this.$refs.captchaImg;
+      if (!container || !img) return;
+      const rect = container.getBoundingClientRect();
+      const clickX = event.clientX - rect.left, clickY = event.clientY - rect.top;
+      const scaleX = this.captchaNaturalW / img.clientWidth, scaleY = this.captchaNaturalH / img.clientHeight;
+      const naturalX = Math.round(clickX * scaleX), naturalY = Math.round(clickY * scaleY);
+      this.captchaPoints.push({ x: clickX, y: clickY, nx: naturalX, ny: naturalY });
+    },
+
+    onCaptchaImgLoad() {
+      const img = this.$refs.captchaImg;
+      if (img) { this.captchaNaturalW = img.naturalWidth; this.captchaNaturalH = img.naturalHeight; }
+    },
+
+    async onSubmitCaptcha() {
+      if (!this.captchaPoints.length) return;
+      const coords = this.captchaPoints.map(p => [p.nx, p.ny]);
+      try {
+        await fetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ value: JSON.stringify({ coordinates: coords, width: this.captchaNaturalW, height: this.captchaNaturalH }) }) });
+      } catch (e) { this.statusMessage = '提交失败：' + e.message; }
+      this.modal.show = null; this.captchaPoints = [];
+    },
+  }));
+});
+</script>
+<script src="/static/alpine.min.js"></script>
+</body>
+</html>

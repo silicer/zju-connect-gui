@@ -18,42 +18,59 @@ env:
   APP_NAME: zju-connect-gui
 
 jobs:
+  # ── Linux (x86_64 native + arm64 native) ────────────────────────────
   build-linux:
-    name: Linux AppImage (x86_64)
-    runs-on: ubuntu-24.04
+    name: Linux (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install slint + appimage tooling deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libfontconfig-dev libxcb1-dev libxcursor-dev \
-            libxrandr-dev libxi-dev pkg-config curl
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Build AppImage
-        run: bash scripts/build_linux_appimage.sh
-
-      - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}-linux-x86_64
-          path: ${{ env.APP_NAME }}-x86_64.AppImage
+          key: ${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package tarball
+        run: |
+          ARCH=${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
+          tar -czf ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}-linux-${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
+          path: ${{ env.APP_NAME }}-linux-*.tar.gz
           if-no-files-found: error
 
+  # ── Windows (x86_64 MSVC) ───────────────────────────────────────────
   build-windows:
-    name: Windows MSVC (x86_64)
+    name: Windows (x86_64)
     runs-on: windows-2022
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install rust toolchain (msvc)
         uses: dtolnay/rust-toolchain@stable
@@ -66,9 +83,54 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --target x86_64-pc-windows-msvc
 
-      - name: Upload exe artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.APP_NAME }}-windows-x86_64
-          path: target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe
+          path: target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe
+          if-no-files-found: error
+
+  # ── macOS (x86_64 + arm64) ──────────────────────────────────────────
+  build-macos:
+    name: macOS (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package tarball
+        run: |
+          ARCH=${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || 'arm64' }}
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
+          tar -czf ${{ env.APP_NAME }}-macos-${ARCH}.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-macos-${ARCH}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}-macos-${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || 'arm64' }}
+          path: ${{ env.APP_NAME }}-macos-*.tar.gz
           if-no-files-found: error

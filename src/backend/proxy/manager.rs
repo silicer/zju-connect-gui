@@ -337,6 +337,12 @@ impl ProxyManager {
         }
         options.validate().map_err(StartError::Validation)?;
 
+        // TUN mode requires administrator privileges on Windows.
+        #[cfg(target_os = "windows")]
+        if options.tun_mode && !crate::backend::platform::is_process_elevated() {
+            return Err(StartError::NeedsElevation);
+        }
+
         // Acquire session_active and bump generation atomically.
         {
             let mut state = self.inner.state.lock().expect("state mutex poisoned");
