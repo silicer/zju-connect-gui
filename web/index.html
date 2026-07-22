@@ -102,6 +102,28 @@
       <input type="checkbox" x-model="proxyOnly">
       仅代理（不启用全局 VPN）
     </label>
+    <div x-show="proxyOnly" style="margin-left:1.5rem;margin-bottom:1rem;padding-left:0.5rem;border-left:2px solid var(--pico-muted-border-color)">
+      <label>
+        <input type="checkbox" x-model="settings.proxybridgeEnabled" @change="if (!$event.target.checked) settings.proxybridgeProcesses = []">
+        启用 ProxyBridge 进程代理
+      </label>
+      <div x-show="settings.proxybridgeEnabled" style="margin-left:1rem">
+        <label style="font-size:0.85rem;color:var(--pico-muted-color)">
+          代理进程列表（每行一个进程名，支持通配符 *）：
+          <textarea x-model="proxybridgeProcessesText" rows="4"
+            placeholder="chrome.exe&#10;firefox.exe&#10;steam*.exe"
+            style="font-family:monospace;font-size:0.8rem"></textarea>
+        </label>
+        <label style="font-size:0.85rem;color:var(--pico-muted-color)">
+          ProxyBridge 路径（留空自动检测）：
+          <input type="text" x-model="settings.proxybridgePath"
+            placeholder="C:\Program Files\ProxyBridge 或留空">
+        </label>
+        <p x-show="needsElevation" style="font-size:0.75rem;color:var(--pico-color-amber-500);margin-top:0.3rem">
+          ⚠️ 此功能需要管理员/root 权限
+        </p>
+      </div>
+    </div>
     <label>
       <input type="checkbox" x-model="settings.debugDump">
       调试转储
@@ -206,6 +228,8 @@ document.addEventListener('alpine:init', () => {
       socksBind: '127.0.0.1:1080', httpBind: '127.0.0.1:8888',
       tunMode: true, debugDump: false,
       eipBrowserProgram: '', eipBrowserArgs: [],
+      proxybridgeEnabled: false, proxybridgeProcesses: [],
+      proxybridgePath: '',
     },
     get proxyOnly() {
       return !this.settings.tunMode;
@@ -218,6 +242,15 @@ document.addEventListener('alpine:init', () => {
     },
     set eipBrowserArgsText(v) {
       this.settings.eipBrowserArgs = v.split('\n').map(s => s.trim()).filter(s => s);
+    },
+    get proxybridgeProcessesText() {
+      return (this.settings.proxybridgeProcesses || []).join('\n');
+    },
+    set proxybridgeProcessesText(v) {
+      this.settings.proxybridgeProcesses = v.split('\n').map(s => s.trim()).filter(s => s);
+    },
+    get needsElevation() {
+      return this.settings.tunMode || (this.settings.proxybridgeEnabled && this.settings.proxybridgeProcesses.length > 0);
     },
     modal: {
       show: null,
@@ -315,7 +348,8 @@ document.addEventListener('alpine:init', () => {
       try {
         const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
         if (r.status === 412) {
-          this.statusMessage = '全局模式需要管理员权限，正在请求提权...';
+          const reason = this.settings.tunMode ? '全局模式' : 'ProxyBridge 进程代理';
+          this.statusMessage = `${reason}需要管理员权限，正在请求提权...`;
           const r2 = await fetch('/api/elevate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
           if (!r2.ok) {
             const msg = await r2.text();

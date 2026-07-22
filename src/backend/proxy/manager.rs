@@ -6,6 +6,7 @@ use crate::backend::proxy::captcha::{
 use crate::backend::proxy::logs::{
     classify_prompt, consume_stream, is_route_added, is_vpn_started, DetectedPrompt,
 };
+use crate::backend::proxy::proxybridge::{self, is_active as pb_is_active};
 use crate::backend::proxy::readiness::{check_tcp_connect, readiness_dial_address};
 use crate::backend::proxy::retry::{
     default_jitter, format_retry_delay, next_retry_delay, JitterFn, DEFAULT_RETRY_BASE_DELAY,
@@ -17,7 +18,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
@@ -184,6 +185,8 @@ struct State {
     delayed_eip: Option<JoinHandle<()>>,
     retry_handle: Option<JoinHandle<()>>,
     readiness_handle: Option<JoinHandle<()>>,
+    proxybridge_child: Option<Child>,
+    proxybridge_handle: Option<JoinHandle<()>>,
 }
 
 impl State {
@@ -206,6 +209,8 @@ impl State {
             delayed_eip: None,
             retry_handle: None,
             readiness_handle: None,
+            proxybridge_child: None,
+            proxybridge_handle: None,
         }
     }
 
@@ -225,6 +230,13 @@ impl State {
         if let Some(handle) = self.readiness_handle.take() {
             handle.abort();
         }
+    }
+
+    fn cancel_proxybridge(&mut self) {
+        if let Some(handle) = self.proxybridge_handle.take() {
+            handle.abort();
+        }
+        self.proxybridge_child = None;
     }
 }
 
@@ -337,10 +349,20 @@ impl ProxyManager {
         }
         options.validate().map_err(StartError::Validation)?;
 
-        // TUN mode requires administrator privileges on Windows.
+        // TUN mode or ProxyBridge integration require administrator privileges.
         #[cfg(target_os = "windows")]
-        if options.tun_mode && !crate::backend::platform::is_process_elevated() {
+        if (options.tun_mode || pb_is_active(&options))
+            && !crate::backend::platform::is_process_elevated()
+        {
             return Err(StartError::NeedsElevation);
+        }
+
+        // On Linux, check for root if ProxyBridge is active.
+        #[cfg(target_os = "linux")]
+        if options.tun_mode || pb_is_active(&options) {
+            if !crate::backend::platform::is_process_elevated() {
+                return Err(StartError::NeedsElevation);
+            }
         }
 
         // Acquire session_active and bump generation atomically.
@@ -389,6 +411,7 @@ impl ProxyManager {
         state.child_pid = None;
         state.stdin_tx = None;
         state.stop_tx = None;
+        state.cancel_proxybridge();
         drop(state);
         self.inner.emit_state(ProxyState::Stopped, None);
     }
@@ -458,7 +481,7 @@ impl ProxyManager {
     }
 
     pub fn stop(&self) -> Result<(), StopError> {
-        let (stop_tx, retry_handle, readiness_handle, delayed_eip, child_pid_present) = {
+        let (stop_tx, retry_handle, readiness_handle, delayed_eip, pb_handle, child_pid_present) = {
             let mut state = self.inner.state.lock().expect("state mutex poisoned");
             state.retry_generation = state.retry_generation.wrapping_add(1);
             state.session_active = false;
@@ -472,9 +495,18 @@ impl ProxyManager {
                 state.retry_handle.take(),
                 state.readiness_handle.take(),
                 state.delayed_eip.take(),
+                state.proxybridge_handle.take(),
                 state.child_pid.is_some(),
             )
         };
+
+        // Stop ProxyBridge first (before zju-connect).
+        // Aborting the supervision handle drops the child, which triggers
+        // kill_on_drop (set in build_command).
+        if let Some(handle) = pb_handle {
+            handle.abort();
+        }
+
         if let Some(handle) = retry_handle {
             handle.abort();
         }
@@ -806,7 +838,7 @@ fn should_continue_ready_wait(inner: &Arc<Inner>, generation: u64) -> bool {
 }
 
 fn mark_ready(inner: Arc<Inner>, generation: u64) {
-    let should_open_eip = {
+    let (should_open_eip, should_start_pb, pb_options) = {
         let mut state = inner.state.lock().expect("state mutex poisoned");
         if generation != state.retry_generation || !state.session_active || state.ready {
             return;
@@ -814,11 +846,18 @@ fn mark_ready(inner: Arc<Inner>, generation: u64) {
         state.ready = true;
         state.ready_wait_gen = 0;
         state.retry_attempt = 0;
-        state.eip_options.eip_auto_open && !state.eip_opened
+        (
+            state.eip_options.eip_auto_open && !state.eip_opened,
+            pb_is_active(&state.eip_options),
+            state.eip_options.clone(),
+        )
     };
     inner.emit_state(ProxyState::Connected, Some("已启动".into()));
     if should_open_eip {
-        schedule_delayed_eip_open(inner, generation);
+        schedule_delayed_eip_open(inner.clone(), generation);
+    }
+    if should_start_pb {
+        spawn_proxybridge(inner, pb_options);
     }
 }
 
@@ -1006,5 +1045,100 @@ async fn run_retry_attempt(inner: Arc<Inner>, generation: u64) {
             attempt,
             delay,
         );
+    }
+}
+
+// ── ProxyBridge integration ────────────────────────────────────────────
+
+/// Spawn the ProxyBridge CLI as a managed child process. Called once
+/// zju-connect has reached the "ready" state.
+fn spawn_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
+    let app_dir = inner.app_dir.clone();
+    let pb_path =
+        match proxybridge::find_proxybridge_binary(options.proxybridge_path.as_deref(), &app_dir) {
+            Some(p) => p,
+            None => {
+                inner.emit_log(
+                    "[proxybridge] ProxyBridge CLI not found; \
+                 install ProxyBridge or configure the path in settings",
+                );
+                return;
+            }
+        };
+
+    // Ensure companion files (DLLs / .so) are alongside the binary.
+    if let Some(parent) = pb_path.parent() {
+        if let Err(e) = proxybridge::ensure_companion_files(parent, &app_dir) {
+            inner.emit_log(format!("[proxybridge] failed to copy companion files: {e}"));
+        }
+    }
+
+    let mut cmd = match proxybridge::build_command(&pb_path, &options, &app_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            inner.emit_log(format!("[proxybridge] failed to build command: {e}"));
+            return;
+        }
+    };
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            inner.emit_log(format!("[proxybridge] failed to spawn: {e}"));
+            return;
+        }
+    };
+
+    let pid = child.id().unwrap_or(0);
+    inner.emit_log(format!("[proxybridge] started (pid={pid})"));
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    // Spawn a supervision task that owns the child, forwards output,
+    // and waits for exit.
+    let inner_for_supervise = inner.clone();
+    let handle = inner.runtime.spawn(async move {
+        // Drive stdout reader
+        if let Some(out) = stdout {
+            let inner2 = inner_for_supervise.clone();
+            tokio::spawn(async move {
+                let reader = BufReader::new(out);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    inner2.emit_log(format!("[proxybridge] {line}"));
+                }
+            });
+        }
+        if let Some(err) = stderr {
+            let inner2 = inner_for_supervise.clone();
+            tokio::spawn(async move {
+                let reader = BufReader::new(err);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    inner2.emit_log(format!("[proxybridge] {line}"));
+                }
+            });
+        }
+
+        // Wait for child exit
+        let status = child.wait().await;
+        let desc = match status {
+            Ok(s) => s.to_string(),
+            Err(e) => e.to_string(),
+        };
+        inner_for_supervise.emit_log(format!("[proxybridge] exited ({desc})"));
+
+        // Clean up the handle from state so stop() doesn't double-kill.
+        let mut state = inner_for_supervise
+            .state
+            .lock()
+            .expect("state mutex poisoned");
+        state.proxybridge_child = None;
+    });
+
+    {
+        let mut state = inner.state.lock().expect("state mutex poisoned");
+        state.proxybridge_handle = Some(handle);
     }
 }

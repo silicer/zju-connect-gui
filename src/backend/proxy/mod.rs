@@ -1,5 +1,6 @@
 pub mod captcha;
 pub mod logs;
+pub mod proxybridge;
 pub mod readiness;
 pub mod retry;
 

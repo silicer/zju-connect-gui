@@ -16,7 +16,7 @@ use zju_connect_gui::backend::platform;
 use zju_connect_gui::backend::relaunch_args::{parse_elevated_relaunch_args, ElevatedRelaunchArgs};
 use zju_connect_gui::backend::{
     pending_connect_store::PendingConnectStore,
-    proxy::{ProxyManager, ProxyManagerConfig, UiBridge},
+    proxy::{self, ProxyManager, ProxyManagerConfig, UiBridge},
     settings_store::UserSettingsStore,
 };
 
@@ -148,12 +148,14 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
                     "提权失败：系统未授予管理员权限。请启用 UAC 或以管理员身份运行本程序。"
                         .to_string(),
                 ));
-                // Don't attempt TUN mode if we're not elevated — it will just fail.
-                // Load settings and disable TUN mode before retrying.
+                // Don't attempt TUN mode or ProxyBridge if we're not elevated —
+                // they will just fail. Disable both before retrying.
                 let mut options = settings.load().unwrap_or_default();
-                if options.tun_mode {
-                    log::warn!("disabling TUN mode because process is not elevated");
+                let needs_elev = options.tun_mode || proxy::proxybridge::is_active(&options);
+                if needs_elev {
+                    log::warn!("disabling TUN mode / ProxyBridge because process is not elevated");
                     options.tun_mode = false;
+                    options.proxybridge_enabled = false;
                 }
                 if let Err(err) = manager.start(options) {
                     log::error!("resume connect failed: {err}");
