@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ZJU Connect GUI
+Comment=Native desktop wrapper for zju-connect
+Exec=zju-connect-gui-launcher
+Icon=zju-connect-gui
+Terminal=false
+Categories=Network;
+StartupNotify=true
