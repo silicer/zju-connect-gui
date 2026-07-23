@@ -16,6 +16,7 @@ permissions:
 
 env:
   APP_NAME: zju-connect-gui
+  PROXYBRIDGE_BUNDLE: true
 
 jobs:
   # ── Linux (x86_64 native + arm64 native) ────────────────────────────
@@ -45,6 +46,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # ── ProxyBridge download (x86_64 only; no arm64 binary yet) ──
+      - name: Download ProxyBridge (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          mkdir -p target/proxybridge-dist
+          curl -fsSL -o /tmp/pb-linux.tar.gz \
+            https://github.com/InterceptSuite/ProxyBridge/releases/download/v3.2.0/ProxyBridge-Linux-v3.2.0.tar.gz
+          tar -xzf /tmp/pb-linux.tar.gz -C target/proxybridge-dist
+          # Keep only CLI + shared library; discard GUI binary and setup script
+          rm -f target/proxybridge-dist/ProxyBridgeGUI target/proxybridge-dist/setup.sh
+          ls -la target/proxybridge-dist/
+
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -53,6 +66,17 @@ jobs:
           ARCH=${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
           mkdir dist
           cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
+
+          # Bundle ProxyBridge when available
+          if [ -f target/proxybridge-dist/ProxyBridge ]; then
+            mkdir -p dist/proxybridge
+            cp target/proxybridge-dist/ProxyBridge dist/proxybridge/
+            cp target/proxybridge-dist/libproxybridge.so dist/proxybridge/
+            echo "ProxyBridge bundled for Linux ${ARCH}"
+          else
+            echo "ProxyBridge not bundled for Linux ${ARCH}"
+          fi
+
           tar -czf ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz -C dist .
           ls -lh ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz
 
@@ -80,14 +104,50 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # ── ProxyBridge download ──────────────────────────────────────
+      - name: Install 7-Zip
+        run: choco install 7zip -y --no-progress
+
+      - name: Download ProxyBridge (Windows)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\proxybridge-dist
+          $url = "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.0.0/ProxyBridge-Setup-4.0.0.exe"
+          $tempExe = "$env:TEMP\pb-setup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $tempExe
+          7z x $tempExe "-otarget\proxybridge-dist" -y
+          # Remove non-CLI files to keep package slim
+          Get-ChildItem target\proxybridge-dist | Where-Object { $_.Name -notin @('ProxyBridge_CLI.exe','ProxyBridgeCore.dll') } | Remove-Item -Recurse -Force
+          Get-ChildItem target\proxybridge-dist
+
       - name: cargo build --release
         run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package windows artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe dist\
+
+          # Bundle ProxyBridge
+          if (Test-Path target\proxybridge-dist\ProxyBridge_CLI.exe) {
+            New-Item -ItemType Directory -Force -Path dist\proxybridge
+            Copy-Item target\proxybridge-dist\ProxyBridge_CLI.exe dist\proxybridge\
+            Copy-Item target\proxybridge-dist\ProxyBridgeCore.dll dist\proxybridge\
+            Write-Host "ProxyBridge bundled for Windows"
+          } else {
+            Write-Host "ProxyBridge not bundled for Windows"
+          }
+
+          # Create zip
+          Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-x86_64.zip
+          Get-ChildItem ${{ env.APP_NAME }}-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.APP_NAME }}-windows-x86_64
-          path: target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe
+          path: ${{ env.APP_NAME }}-windows-x86_64.zip
           if-no-files-found: error
 
   # ── macOS (x86_64 + arm64) ──────────────────────────────────────────
@@ -116,6 +176,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      # macOS: no compile-time bundling (requires Network Extension system
+      # extension + .pkg installer). Runtime detect-only.
 
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
