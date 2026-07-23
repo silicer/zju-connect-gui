@@ -1058,10 +1058,11 @@ fn spawn_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
         match proxybridge::find_proxybridge_binary(options.proxybridge_path.as_deref(), &app_dir) {
             Some(p) => p,
             None => {
-                inner.emit_log(
+                let hint = proxybridge::install_hint();
+                inner.emit_log(format!(
                     "[proxybridge] ProxyBridge CLI not found; \
-                 install ProxyBridge or configure the path in settings",
-                );
+                 install ProxyBridge or configure the path in settings. Download: {hint}"
+                ));
                 return;
             }
         };

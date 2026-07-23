@@ -106,81 +106,18 @@ jobs:
           path: ${{ env.APP_NAME }}-linux-*.tar.gz
           if-no-files-found: error
 
-  # ── Windows (x86_64 MSVC) ───────────────────────────────────────────
+  # ── Windows (x86_64 + arm64) ───────────────────────────────────────
   build-windows:
-    name: Windows (x86_64)
-    runs-on: windows-2022
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install rust toolchain (msvc)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      # ── ProxyBridge download ──────────────────────────────────────
-      - name: Install 7-Zip
-        run: choco install 7zip -y --no-progress
-
-      - name: Download ProxyBridge (Windows)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path target\proxybridge-dist
-          $url = "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.0.0/ProxyBridge-Setup-4.0.0.exe"
-          $tempExe = "$env:TEMP\pb-setup.exe"
-          Invoke-WebRequest -Uri $url -OutFile $tempExe
-          7z x $tempExe "-otarget\proxybridge-dist" -y
-          # Remove non-CLI files to keep package slim
-          Get-ChildItem target\proxybridge-dist | Where-Object { $_.Name -notin @('ProxyBridge_CLI.exe','ProxyBridgeCore.dll') } | Remove-Item -Recurse -Force
-          Get-ChildItem target\proxybridge-dist
-
-      - name: cargo build --release
-        run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Package windows artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe dist\
-
-          # Bundle ProxyBridge
-          if (Test-Path target\proxybridge-dist\ProxyBridge_CLI.exe) {
-            New-Item -ItemType Directory -Force -Path dist\proxybridge
-            Copy-Item target\proxybridge-dist\ProxyBridge_CLI.exe dist\proxybridge\
-            Copy-Item target\proxybridge-dist\ProxyBridgeCore.dll dist\proxybridge\
-            Write-Host "ProxyBridge bundled for Windows"
-          } else {
-            Write-Host "ProxyBridge not bundled for Windows"
-          }
-
-          # Create zip
-          Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-x86_64.zip
-          Get-ChildItem ${{ env.APP_NAME }}-windows-x86_64.zip
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.APP_NAME }}-windows-x86_64
-          path: ${{ env.APP_NAME }}-windows-x86_64.zip
-          if-no-files-found: error
-
-  # ── macOS (x86_64 + arm64) ──────────────────────────────────────────
-  build-macos:
-    name: macOS (${{ matrix.target }})
+    name: Windows (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            os: macos-13
-          - target: aarch64-apple-darwin
-            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
 
     steps:
       - name: Checkout
@@ -196,23 +133,88 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # macOS: no compile-time bundling (requires Network Extension system
-      # extension + .pkg installer). Runtime detect-only.
+      # ── ProxyBridge: x86_64 only (no ARM64 WinDivert driver yet) ──
+      - name: Install 7-Zip (x86_64 only)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: choco install 7zip -y --no-progress
+
+      - name: Download ProxyBridge (Windows x86_64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\proxybridge-dist
+          $url = "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.0.0/ProxyBridge-Setup-4.0.0.exe"
+          $tempExe = "$env:TEMP\pb-setup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $tempExe
+          7z x $tempExe "-otarget\proxybridge-dist" -y
+          # Remove non-CLI files to keep package slim
+          Get-ChildItem target\proxybridge-dist | Where-Object { $_.Name -notin @('ProxyBridge_CLI.exe','ProxyBridgeCore.dll') } | Remove-Item -Recurse -Force
+          Get-ChildItem target\proxybridge-dist
 
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package tarball
+      - name: Package artifact
+        shell: pwsh
         run: |
-          ARCH=${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || 'arm64' }}
-          mkdir dist
-          cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
-          tar -czf ${{ env.APP_NAME }}-macos-${ARCH}.tar.gz -C dist .
-          ls -lh ${{ env.APP_NAME }}-macos-${ARCH}.tar.gz
+          $ARCH = if ('${{ matrix.target }}' -like '*aarch64*') { 'arm64' } else { 'x86_64' }
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe dist\
+
+          # Bundle ProxyBridge when available (x86_64 only)
+          if (Test-Path target\proxybridge-dist\ProxyBridge_CLI.exe) {
+            New-Item -ItemType Directory -Force -Path dist\proxybridge
+            Copy-Item target\proxybridge-dist\ProxyBridge_CLI.exe dist\proxybridge\
+            Copy-Item target\proxybridge-dist\ProxyBridgeCore.dll dist\proxybridge\
+            Write-Host "ProxyBridge bundled for Windows ${ARCH}"
+          } else {
+            Write-Host "ProxyBridge not bundled for Windows ${ARCH}"
+          }
+
+          # Create zip
+          Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-${ARCH}.zip
+          Get-ChildItem ${{ env.APP_NAME }}-windows-${ARCH}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}-macos-${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || 'arm64' }}
+          name: ${{ env.APP_NAME }}-windows-${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}
+          path: ${{ env.APP_NAME }}-windows-*.zip
+          if-no-files-found: error
+
+  # ── macOS (arm64 only) ──────────────────────────────────────────────
+  build-macos:
+    name: macOS (arm64)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # macOS: no compile-time bundling (requires Network Extension system
+      # extension + .pkg installer). Runtime detect-only with install prompt.
+
+      - name: cargo build --release
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Package tarball
+        run: |
+          mkdir dist
+          cp target/aarch64-apple-darwin/release/${{ env.APP_NAME }} dist/
+          tar -czf ${{ env.APP_NAME }}-macos-arm64.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-macos-arm64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}-macos-arm64
           path: ${{ env.APP_NAME }}-macos-*.tar.gz
           if-no-files-found: error

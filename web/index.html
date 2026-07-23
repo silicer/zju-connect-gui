@@ -122,6 +122,13 @@
         <p x-show="needsElevation" style="font-size:0.75rem;color:var(--pico-color-amber-500);margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限
         </p>
+        <p x-show="isMacOS" style="font-size:0.75rem;color:var(--pico-color-blue-500);margin-top:0.3rem">
+          🔗 macOS 需要先安装 ProxyBridge：
+          <a href="https://interceptsuite.com/download/proxybridge" target="_blank" rel="noopener">
+            interceptsuite.com/download/proxybridge
+          </a>
+          （安装后需在 系统设置 → 网络扩展 中批准）
+        </p>
       </div>
     </div>
     <label>
@@ -223,6 +230,7 @@ document.addEventListener('alpine:init', () => {
     starting: false,
     stopping: false,
     logs: [],
+    isMacOS: /Mac/i.test(navigator.platform || navigator.userAgentData?.platform || ''),
     settings: {
       username: '', password: '',
       socksBind: '127.0.0.1:1080', httpBind: '127.0.0.1:8888',

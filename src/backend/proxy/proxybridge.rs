@@ -223,6 +223,25 @@ pub fn is_active(options: &LaunchOptions) -> bool {
     options.proxybridge_enabled && !options.proxybridge_processes.is_empty() && !options.tun_mode
 }
 
+/// Returns a platform-specific hint for installing ProxyBridge, including
+/// the official download URL. Used in UI prompts and log messages.
+pub fn install_hint() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "https://interceptsuite.com/download/proxybridge"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macOS 上使用 ProxyBridge 需要先安装网络扩展（Network Extension）。\n\
+         请访问 https://interceptsuite.com/download/proxybridge 下载 .pkg 安装包，\n\
+         安装后需要在 系统设置 → 隐私与安全性 → 网络扩展 中批准 ProxyBridge。"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "https://interceptsuite.com/download/proxybridge"
+    }
+}
+
 /// Returns true if ProxyBridge needs administrator/root privileges.
 /// Currently: always true when active (WinDivert on Windows, NFQUEUE on Linux).
 pub fn needs_elevation() -> bool {
