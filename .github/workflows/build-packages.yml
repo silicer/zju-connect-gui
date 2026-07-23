@@ -46,7 +46,13 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # ── ProxyBridge download (x86_64 only; no arm64 binary yet) ──
+      # ── ProxyBridge: download for x86_64, compile from source for arm64 ──
+      - name: Install ProxyBridge build deps (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev
+
       - name: Download ProxyBridge (Linux x86_64)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
@@ -57,6 +63,19 @@ jobs:
           # Keep only CLI + shared library; discard GUI binary and setup script
           rm -f target/proxybridge-dist/ProxyBridgeGUI target/proxybridge-dist/setup.sh
           ls -la target/proxybridge-dist/
+
+      - name: Compile ProxyBridge from source (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          PB_TAG=v3.2.0
+          PB_COMMIT=7dd955f8e726cd113146984858ba11bf7202bff9
+          git clone --depth 1 --branch $PB_TAG https://github.com/InterceptSuite/ProxyBridge.git /tmp/pb-src
+          cd /tmp/pb-src/Linux
+          bash build.sh
+          mkdir -p $GITHUB_WORKSPACE/target/proxybridge-dist
+          cp output/libproxybridge.so $GITHUB_WORKSPACE/target/proxybridge-dist/
+          cp output/ProxyBridge $GITHUB_WORKSPACE/target/proxybridge-dist/
+          ls -la $GITHUB_WORKSPACE/target/proxybridge-dist/
 
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
