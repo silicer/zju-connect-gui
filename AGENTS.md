@@ -42,6 +42,8 @@ src/
                                retry/readiness/eip-open generation logic
       proxybridge.rs           in-process libproxybridge.so / ProxyBridgeCore.dll
                                binding (dlopen + C API; macOS stubbed out)
+      windivert.rs             WinDivert kernel driver ensure/install/start
+                               (Windows only, no-op elsewhere)
       logs.rs                  chunked stream reader + prompt detection
       readiness.rs             HTTP-bind dial poll
       captcha.rs               60s deadline, size-stable file polling

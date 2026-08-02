@@ -400,8 +400,9 @@ pub fn find_proxybridge_library(_user_path: Option<&str>, _app_dir: &Path) -> Op
 pub fn install_hint() -> &'static str {
     #[cfg(target_os = "windows")]
     {
-        "Install ProxyBridge (includes the WinDivert driver) from \
-         https://interceptsuite.com/download/proxybridge and try again."
+        "The bundled WinDivert driver is installed automatically when missing. \
+         If this still fails, install ProxyBridge (includes the WinDivert driver) \
+         from https://interceptsuite.com/download/proxybridge."
     }
     #[cfg(target_os = "linux")]
     {

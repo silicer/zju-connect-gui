@@ -132,11 +132,29 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # ── ProxyBridge: no bundling on Windows ─────────────────────────
-      # The app loads `ProxyBridgeCore.dll` from the installed location
-      # (C:\Program Files\ProxyBridge / PATH). Bundling the DLL without the
-      # installer would be useless: the WinDivert kernel driver must be
-      # installed first, and only the setup.exe does that.
+      # ── ProxyBridge: bundle core lib + WinDivert driver (x86_64 only) ──
+      # The app loads ProxyBridgeCore.dll from the bundled proxybridge/ dir
+      # and auto-installs the signed WinDivert64.sys driver as a kernel
+      # service when missing, so users never run an installer by hand.
+      # All three files sit at the top level of the NSIS setup archive.
+      # ARM64 is not bundled: no ARM64 WinDivert driver exists and the x64
+      # core DLL cannot load in an arm64 process.
+      - name: Install 7-Zip (x86_64 only)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: choco install 7zip -y --no-progress
+
+      - name: Download ProxyBridge (Windows x86_64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\proxybridge-dist
+          $url = "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.0.0/ProxyBridge-Setup-4.0.0.exe"
+          $tempExe = "$env:TEMP\pb-setup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $tempExe
+          7z x $tempExe "-otarget\proxybridge-dist" -y | Out-Null
+          # Keep only core library + WinDivert driver/dll; drop GUI/CLI/Skia
+          Get-ChildItem target\proxybridge-dist | Where-Object { $_.Name -notin @('ProxyBridgeCore.dll','WinDivert.dll','WinDivert64.sys') } | Remove-Item -Recurse -Force
+          Get-ChildItem target\proxybridge-dist
 
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
@@ -147,6 +165,15 @@ jobs:
           $ARCH = if ('${{ matrix.target }}' -like '*aarch64*') { 'arm64' } else { 'x86_64' }
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe dist\
+
+          # Bundle ProxyBridge when available (x86_64 only)
+          if (Test-Path target\proxybridge-dist\ProxyBridgeCore.dll) {
+            New-Item -ItemType Directory -Force -Path dist\proxybridge
+            Copy-Item target\proxybridge-dist\* dist\proxybridge\
+            Write-Host "ProxyBridge bundled for Windows ${ARCH}"
+          } else {
+            Write-Host "ProxyBridge not bundled for Windows ${ARCH}"
+          }
 
           # Create zip
           Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-${ARCH}.zip

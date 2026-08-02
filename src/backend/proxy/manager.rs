@@ -1114,6 +1114,19 @@ fn start_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
             return;
         }
     };
+
+    // Make sure the WinDivert kernel driver is available before starting
+    // interception (Windows only; no-op elsewhere).
+    #[cfg(target_os = "windows")]
+    if let Err(e) = crate::backend::proxy::windivert::ensure_windivert_driver(&app_dir) {
+        log_handle.abort();
+        let hint = proxybridge::install_hint();
+        inner.emit_log(format!(
+            "[proxybridge] WinDivert driver unavailable: {e} {hint}"
+        ));
+        return;
+    }
+
     if let Err(e) = pb.start(&options) {
         log_handle.abort();
         inner.emit_log(format!("[proxybridge] failed to start: {e}"));

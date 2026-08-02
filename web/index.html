@@ -125,6 +125,9 @@
         <p x-show="needsElevation" style="font-size:0.75rem;color:var(--pico-color-amber-500);margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限
         </p>
+        <p x-show="isWindows" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 缺少 WinDivert 驱动时会自动安装（需要管理员权限）
+        </p>
       </div>
     </div>
     <label>
@@ -227,6 +230,7 @@ document.addEventListener('alpine:init', () => {
     stopping: false,
     logs: [],
     isMacOS: /Mac/i.test(navigator.platform || navigator.userAgentData?.platform || ''),
+    isWindows: /Win/i.test(navigator.platform || navigator.userAgentData?.platform || ''),
     settings: {
       username: '', password: '',
       socksBind: '127.0.0.1:1080', httpBind: '127.0.0.1:8888',
