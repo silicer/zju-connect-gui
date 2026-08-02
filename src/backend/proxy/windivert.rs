@@ -10,6 +10,8 @@
 //! On non-Windows platforms this module is a no-op stub.
 
 use std::path::Path;
+
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]

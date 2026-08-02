@@ -437,6 +437,7 @@ fn extract_host_port(bind: &str) -> (&str, u16) {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn extract_host_port_parses_correctly() {
         assert_eq!(extract_host_port("127.0.0.1:1080"), ("127.0.0.1", 1080));
@@ -466,9 +467,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn is_active_never_true_on_macos() {
-        let mut opts = LaunchOptions::default();
-        opts.proxybridge_enabled = true;
-        opts.proxybridge_processes = vec!["chrome.exe".into()];
+        let opts = LaunchOptions {
+            proxybridge_enabled: true,
+            proxybridge_processes: vec!["chrome.exe".into()],
+            ..LaunchOptions::default()
+        };
         assert!(!is_active(&opts));
     }
 }
