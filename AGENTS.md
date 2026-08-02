@@ -40,6 +40,8 @@ src/
     proxy/                     supervisor + helpers
       manager.rs               ProxyManager, supervise_child task,
                                retry/readiness/eip-open generation logic
+      proxybridge.rs           in-process libproxybridge.so / ProxyBridgeCore.dll
+                               binding (dlopen + C API; macOS stubbed out)
       logs.rs                  chunked stream reader + prompt detection
       readiness.rs             HTTP-bind dial poll
       captcha.rs               60s deadline, size-stable file polling

@@ -102,7 +102,7 @@
       <input type="checkbox" x-model="proxyOnly">
       仅代理（不启用全局 VPN）
     </label>
-    <div x-show="proxyOnly" style="margin-left:1.5rem;margin-bottom:1rem;padding-left:0.5rem;border-left:2px solid var(--pico-muted-border-color)">
+    <div x-show="!isMacOS && proxyOnly" style="margin-left:1.5rem;margin-bottom:1rem;padding-left:0.5rem;border-left:2px solid var(--pico-muted-border-color)">
       <label>
         <input type="checkbox" x-model="settings.proxybridgeEnabled" @change="if (!$event.target.checked) settings.proxybridgeProcesses = []">
         启用 ProxyBridge 进程代理
@@ -114,20 +114,16 @@
             placeholder="chrome.exe&#10;firefox.exe&#10;steam*.exe"
             style="font-family:monospace;font-size:0.8rem"></textarea>
         </label>
+        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 修改进程列表或路径后，需停止并重新连接才生效
+        </p>
         <label style="font-size:0.85rem;color:var(--pico-muted-color)">
           ProxyBridge 路径（留空自动检测）：
           <input type="text" x-model="settings.proxybridgePath"
-            placeholder="C:\Program Files\ProxyBridge 或留空">
+            placeholder="留空自动检测（安装目录 / 捆绑目录）">
         </label>
         <p x-show="needsElevation" style="font-size:0.75rem;color:var(--pico-color-amber-500);margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限
-        </p>
-        <p x-show="isMacOS" style="font-size:0.75rem;color:var(--pico-color-blue-500);margin-top:0.3rem">
-          🔗 macOS 需要先安装 ProxyBridge：
-          <a href="https://interceptsuite.com/download/proxybridge" target="_blank" rel="noopener">
-            interceptsuite.com/download/proxybridge
-          </a>
-          （安装后需在 系统设置 → 网络扩展 中批准）
         </p>
       </div>
     </div>

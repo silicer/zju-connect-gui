@@ -16,7 +16,6 @@ permissions:
 
 env:
   APP_NAME: zju-connect-gui
-  PROXYBRIDGE_BUNDLE: true
 
 jobs:
   # ── Linux (x86_64 native + arm64 native) ────────────────────────────
@@ -46,7 +45,9 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # ── ProxyBridge: download for x86_64, compile from source for arm64 ──
+      # ── ProxyBridge: bundle the core library (no CLI needed; the app
+      #    loads `libproxybridge.so` in-process). x86_64 from release,
+      #    arm64 compiled from source. ──
       - name: Install ProxyBridge build deps (Linux arm64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -60,8 +61,8 @@ jobs:
           curl -fsSL -o /tmp/pb-linux.tar.gz \
             https://github.com/InterceptSuite/ProxyBridge/releases/download/v3.2.0/ProxyBridge-Linux-v3.2.0.tar.gz
           tar -xzf /tmp/pb-linux.tar.gz -C target/proxybridge-dist
-          # Keep only CLI + shared library; discard GUI binary and setup script
-          rm -f target/proxybridge-dist/ProxyBridgeGUI target/proxybridge-dist/setup.sh
+          # Keep only the shared library; discard CLI, GUI and setup script
+          rm -f target/proxybridge-dist/ProxyBridge target/proxybridge-dist/ProxyBridgeGUI target/proxybridge-dist/setup.sh
           ls -la target/proxybridge-dist/
 
       - name: Compile ProxyBridge from source (Linux arm64)
@@ -74,7 +75,6 @@ jobs:
           bash build.sh
           mkdir -p $GITHUB_WORKSPACE/target/proxybridge-dist
           cp output/libproxybridge.so $GITHUB_WORKSPACE/target/proxybridge-dist/
-          cp output/ProxyBridge $GITHUB_WORKSPACE/target/proxybridge-dist/
           ls -la $GITHUB_WORKSPACE/target/proxybridge-dist/
 
       - name: cargo build --release
@@ -86,10 +86,9 @@ jobs:
           mkdir dist
           cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
 
-          # Bundle ProxyBridge when available
-          if [ -f target/proxybridge-dist/ProxyBridge ]; then
+          # Bundle the ProxyBridge shared library when available
+          if [ -f target/proxybridge-dist/libproxybridge.so ]; then
             mkdir -p dist/proxybridge
-            cp target/proxybridge-dist/ProxyBridge dist/proxybridge/
             cp target/proxybridge-dist/libproxybridge.so dist/proxybridge/
             echo "ProxyBridge bundled for Linux ${ARCH}"
           else
@@ -133,23 +132,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # ── ProxyBridge: x86_64 only (no ARM64 WinDivert driver yet) ──
-      - name: Install 7-Zip (x86_64 only)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        run: choco install 7zip -y --no-progress
-
-      - name: Download ProxyBridge (Windows x86_64)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path target\proxybridge-dist
-          $url = "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.0.0/ProxyBridge-Setup-4.0.0.exe"
-          $tempExe = "$env:TEMP\pb-setup.exe"
-          Invoke-WebRequest -Uri $url -OutFile $tempExe
-          7z x $tempExe "-otarget\proxybridge-dist" -y
-          # Remove non-CLI files to keep package slim
-          Get-ChildItem target\proxybridge-dist | Where-Object { $_.Name -notin @('ProxyBridge_CLI.exe','ProxyBridgeCore.dll') } | Remove-Item -Recurse -Force
-          Get-ChildItem target\proxybridge-dist
+      # ── ProxyBridge: no bundling on Windows ─────────────────────────
+      # The app loads `ProxyBridgeCore.dll` from the installed location
+      # (C:\Program Files\ProxyBridge / PATH). Bundling the DLL without the
+      # installer would be useless: the WinDivert kernel driver must be
+      # installed first, and only the setup.exe does that.
 
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
@@ -160,16 +147,6 @@ jobs:
           $ARCH = if ('${{ matrix.target }}' -like '*aarch64*') { 'arm64' } else { 'x86_64' }
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe dist\
-
-          # Bundle ProxyBridge when available (x86_64 only)
-          if (Test-Path target\proxybridge-dist\ProxyBridge_CLI.exe) {
-            New-Item -ItemType Directory -Force -Path dist\proxybridge
-            Copy-Item target\proxybridge-dist\ProxyBridge_CLI.exe dist\proxybridge\
-            Copy-Item target\proxybridge-dist\ProxyBridgeCore.dll dist\proxybridge\
-            Write-Host "ProxyBridge bundled for Windows ${ARCH}"
-          } else {
-            Write-Host "ProxyBridge not bundled for Windows ${ARCH}"
-          }
 
           # Create zip
           Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-${ARCH}.zip
@@ -199,8 +176,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # macOS: no compile-time bundling (requires Network Extension system
-      # extension + .pkg installer). Runtime detect-only with install prompt.
+      # macOS: ProxyBridge integration is not supported (upstream ships no
+      # reusable library/CLI for macOS) and is compiled out of the app.
 
       - name: cargo build --release
         run: cargo build --release --target aarch64-apple-darwin

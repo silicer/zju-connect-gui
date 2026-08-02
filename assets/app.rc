@@ -1,0 +1,3 @@
+// Windows application icon resource.
+// Referenced by build.rs via embed-resource (rc.exe on MSVC, windres on GNU).
+1 ICON "assets/gemini.ico"

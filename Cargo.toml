@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
 base64 = "0.22"
+libloading = "0.8"
 rand = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
@@ -46,6 +47,9 @@ windows = { version = "0.58", features = [
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["test-util", "macros", "rt"] }
+
+[build-dependencies]
+embed-resource = "2"
 
 
 
