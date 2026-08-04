@@ -2,8 +2,8 @@
 //! tokio broadcast channel. SSE handlers subscribe to the receiver half
 //! and stream events to connected browser clients.
 
+use crate::backend::proxy::{ProxyEvent, UiBridge};
 use tokio::sync::broadcast;
-use zju_connect_gui::backend::proxy::{ProxyEvent, UiBridge};
 
 /// Wrapper for a ProxyEvent that can be sent through a broadcast channel.
 #[derive(Debug, Clone)]

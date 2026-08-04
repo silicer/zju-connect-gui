@@ -25,11 +25,12 @@ impl Drop for TrayController {
 impl TrayController {
     /// Create the tray icon. Returns the controller plus a oneshot receiver
     /// that fires when the user clicks "退出".
-    pub fn new(port: u16) -> Result<(Self, oneshot::Receiver<()>), TrayError> {
+    pub fn new(port: u16, token: &str) -> Result<(Self, oneshot::Receiver<()>), TrayError> {
         let (quit_tx, quit_rx) = oneshot::channel();
         let icon = build_icon()?;
         let tray = ZjuTray {
             port,
+            token: token.to_string(),
             quit_tx: Some(quit_tx),
             icon,
         };
@@ -48,6 +49,7 @@ impl TrayController {
 
 struct ZjuTray {
     port: u16,
+    token: String,
     quit_tx: Option<oneshot::Sender<()>>,
     icon: Icon,
 }
@@ -75,14 +77,14 @@ impl Tray for ZjuTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        open_web_ui(self.port);
+        open_web_ui(self.port, &self.token);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         vec![
             StandardItem {
                 label: "打开网页".into(),
-                activate: Box::new(|tray: &mut ZjuTray| open_web_ui(tray.port)),
+                activate: Box::new(|tray: &mut ZjuTray| open_web_ui(tray.port, &tray.token)),
                 ..Default::default()
             }
             .into(),

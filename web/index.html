@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
 <title>ZJU Connect</title>
 <link rel="stylesheet" href="/static/pico.min.css">
 <style>
@@ -17,8 +18,8 @@
     font-size: 0.85rem; font-weight: 600;
   }
   .status-stopped { background: var(--pico-muted-color); color: white; }
-  .status-connecting { background: var(--pico-color-amber-400); color: black; }
-  .status-connected { background: var(--pico-color-jade-400); color: black; }
+  .status-connecting { background: #fbbf24; color: black; }
+  .status-connected { background: #34d399; color: black; }
   .log-viewer {
     background: var(--pico-card-background-color);
     border: 1px solid var(--pico-muted-border-color);
@@ -45,7 +46,7 @@
   .captcha-img-container img { max-width: 100%; border-radius: 4px; }
   .captcha-marker {
     position: absolute; width: 18px; height: 18px;
-    background: var(--pico-color-red-500); color: white;
+    background: #ef4444; color: white;
     border-radius: 50%; font-size: 11px; font-weight: bold;
     display: flex; align-items: center; justify-content: center;
     transform: translate(-50%, -50%); pointer-events: none;
@@ -122,7 +123,7 @@
           <input type="text" x-model="settings.proxybridgePath"
             placeholder="留空自动检测（安装目录 / 捆绑目录）">
         </label>
-        <p x-show="needsElevation" style="font-size:0.75rem;color:var(--pico-color-amber-500);margin-top:0.3rem">
+        <p x-show="needsElevation" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限
         </p>
         <p x-show="isWindows" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
@@ -186,6 +187,7 @@
           x-model="modal.inputValue"
           @keydown.enter="onSubmitInput()"
           :placeholder="modal.inputKind === 'sms' ? '短信验证码' : ''"
+          x-ref="inputField"
           autofocus>
       </div>
       <div class="modal-actions">
@@ -221,6 +223,22 @@
 </div>
 
 <script>
+// Per-launch auth token, embedded in the URL the app opens
+// (http://localhost:<port>/?token=...). All API calls must present it.
+const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+
+async function apiFetch(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (TOKEN) headers['X-Auth-Token'] = TOKEN;
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
+  if (r.status === 403) {
+    const e = new Error('页面缺少访问令牌，请通过托盘图标或应用自动打开的链接访问');
+    e.authFailed = true;
+    throw e;
+  }
+  return r;
+}
+
 document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
     tab: 'settings',
@@ -228,6 +246,7 @@ document.addEventListener('alpine:init', () => {
     statusMessage: '',
     starting: false,
     stopping: false,
+    sseErrors: 0,
     logs: [],
     isMacOS: /Mac/i.test(navigator.platform || navigator.userAgentData?.platform || ''),
     isWindows: /Win/i.test(navigator.platform || navigator.userAgentData?.platform || ''),
@@ -273,28 +292,47 @@ document.addEventListener('alpine:init', () => {
     captchaNaturalH: 0,
 
     async init() {
+      if (!TOKEN) {
+        this.statusMessage = '页面缺少访问令牌，请通过托盘图标或应用自动打开的链接访问';
+      } else if (history.replaceState) {
+        // Strip the token from the address bar / browser history as soon as
+        // it has been captured: it must not linger in history or in the URL
+        // shown on screen.
+        const url = new URL(window.location.href);
+        url.searchParams.delete('token');
+        history.replaceState(null, '', url.toString());
+      }
       try {
-        const r = await fetch('/api/settings');
+        const r = await apiFetch('/api/settings');
         if (r.ok) {
           const opts = await r.json();
           Object.assign(this.settings, opts);
         }
-      } catch (e) {}
+      } catch (e) {
+        if (e.authFailed) this.statusMessage = e.message;
+      }
 
       try {
-        const r = await fetch('/api/status');
+        const r = await apiFetch('/api/status');
         if (r.ok) {
           const s = await r.json();
           this.status.running = s.sessionActive;
           this.status.ready = s.ready;
         }
-      } catch (e) {}
+      } catch (e) {
+        if (e.authFailed) this.statusMessage = e.message;
+      }
 
       this.connectSse();
+      this.$watch('modal.show', (v) => {
+        if (v === 'input') {
+          this.$nextTick(() => { const el = this.$refs.inputField; if (el) el.focus(); });
+        }
+      });
     },
 
     connectSse() {
-      const es = new EventSource('/api/events');
+      const es = new EventSource('/api/events' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : ''));
       es.addEventListener('log', (e) => this.appendLog(JSON.parse(e.data).line));
       es.addEventListener('state', (e) => {
         const d = JSON.parse(e.data);
@@ -331,12 +369,25 @@ document.addEventListener('alpine:init', () => {
         this.statusMessage = d.message;
         this.starting = false; this.stopping = false;
       });
+      es.onopen = () => { this.sseErrors = 0; this.refreshStatus(); };
       es.onerror = () => {
-        setTimeout(() => {
-          if (es.readyState === EventSource.CLOSED)
-            this.statusMessage = '与后台连接已断开，请刷新页面';
-        }, 5000);
+        this.sseErrors = (this.sseErrors || 0) + 1;
+        if (this.sseErrors >= 5) {
+          this.statusMessage = '与后台连接已断开，请刷新页面';
+          this.starting = false; this.stopping = false;
+        }
       };
+    },
+
+    async refreshStatus() {
+      try {
+        const r = await apiFetch('/api/status');
+        if (r.ok) {
+          const s = await r.json();
+          this.status.running = s.sessionActive;
+          this.status.ready = s.ready;
+        }
+      } catch (e) {}
     },
 
     appendLog(line) {
@@ -352,18 +403,18 @@ document.addEventListener('alpine:init', () => {
       if (this.starting) return;
       this.starting = true;
       this.statusMessage = '正在启动...';
-      try { await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(this.settings) }); } catch(e) {}
+      try { await apiFetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(this.settings) }); } catch(e) {}
       try {
-        const r = await fetch('/api/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
+        const r = await apiFetch('/api/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
         if (r.status === 412) {
           const reason = this.settings.tunMode ? '全局模式' : 'ProxyBridge 进程代理';
           this.statusMessage = `${reason}需要管理员权限，正在请求提权...`;
-          const r2 = await fetch('/api/elevate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
+          const r2 = await apiFetch('/api/elevate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
           if (!r2.ok) {
             const msg = await r2.text();
             this.statusMessage = '提权失败：' + msg;
           } else {
-            this.statusMessage = '已请求管理员权限，新窗口启动后将自动连接。页面即将刷新...';
+            this.statusMessage = '已请求管理员权限，新窗口将自动连接；若未弹出授权窗口，请检查系统权限设置';
           }
           this.starting = false;
         } else if (!r.ok) {
@@ -380,15 +431,26 @@ document.addEventListener('alpine:init', () => {
     async onStop() {
       if (this.stopping) return;
       this.stopping = true; this.statusMessage = '正在停止...';
-      try { await fetch('/api/stop', { method: 'POST' }); }
+      try {
+        const r = await apiFetch('/api/stop', { method: 'POST' });
+        if (!r.ok) {
+          this.statusMessage = '停止失败：' + (await r.text());
+          this.stopping = false;
+        }
+      }
       catch (e) { this.statusMessage = '停止失败：' + e.message; this.stopping = false; }
     },
 
     async onSubmitInput() {
       if (!this.modal.inputValue) return;
-      try { await fetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ value: this.modal.inputValue }) }); }
-      catch (e) { this.statusMessage = '提交失败：' + e.message; }
-      this.modal.show = null; this.modal.inputValue = '';
+      try {
+        const r = await apiFetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ value: this.modal.inputValue, kind: this.modal.inputKind }) });
+        if (!r.ok) {
+          this.statusMessage = '提交失败：' + (await r.text());
+          return;
+        }
+        this.modal.show = null; this.modal.inputValue = '';
+      } catch (e) { this.statusMessage = '提交失败：' + e.message; }
     },
 
     onCancelModal() { this.modal.show = null; this.captchaPoints = []; },
@@ -412,10 +474,14 @@ document.addEventListener('alpine:init', () => {
       if (!this.captchaPoints.length) return;
       const coords = this.captchaPoints.map(p => [p.nx, p.ny]);
       try {
-        await fetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ value: JSON.stringify({ coordinates: coords, width: this.captchaNaturalW, height: this.captchaNaturalH }) }) });
+        const r = await apiFetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ value: JSON.stringify({ coordinates: coords, width: this.captchaNaturalW, height: this.captchaNaturalH }), kind: 'captcha' }) });
+        if (!r.ok) {
+          this.statusMessage = '提交失败：' + (await r.text());
+          return;
+        }
+        this.modal.show = null; this.captchaPoints = [];
       } catch (e) { this.statusMessage = '提交失败：' + e.message; }
-      this.modal.show = null; this.captchaPoints = [];
     },
   }));
 });

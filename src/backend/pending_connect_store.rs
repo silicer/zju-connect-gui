@@ -64,7 +64,9 @@ impl PendingConnectStore {
         };
         let state: PendingConnectState =
             serde_json::from_slice(&data).map_err(PendingConnectError::Decode)?;
-        if Utc::now().signed_duration_since(state.created_at) > PENDING_CONNECT_MAX_AGE {
+        let age = Utc::now().signed_duration_since(state.created_at);
+        // Treat both too-old and future (clock-skewed) timestamps as stale.
+        if age > PENDING_CONNECT_MAX_AGE || age < -PENDING_CONNECT_MAX_AGE {
             match fs::remove_file(&self.path) {
                 Ok(_) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -133,6 +135,27 @@ mod tests {
         fs::write(
             tmp.path().join(PENDING_CONNECT_FILE_NAME),
             serde_json::to_vec(&stale).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!store.has_resume_connect().unwrap());
+        assert!(!tmp.path().join(PENDING_CONNECT_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn pending_connect_store_clears_future_timestamp() {
+        // A created_at in the future (clock moved backwards) must not keep the
+        // marker alive forever.
+        let tmp = tempdir().unwrap();
+        let store = PendingConnectStore::new(tmp.path());
+
+        let future = PendingConnectState {
+            resume_connect: true,
+            created_at: Utc::now() + Duration::minutes(10),
+        };
+        fs::write(
+            tmp.path().join(PENDING_CONNECT_FILE_NAME),
+            serde_json::to_vec(&future).unwrap(),
         )
         .unwrap();
 

@@ -7,11 +7,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
 
-use zju_connect_gui::backend::launch_options::{normalize_launch_options, LaunchOptions};
-use zju_connect_gui::backend::proxy::ProxyManager;
-use zju_connect_gui::backend::settings_store::UserSettingsStore;
+use crate::backend::launch_options::{normalize_launch_options, LaunchOptions};
+use crate::backend::proxy::ProxyManager;
+use crate::backend::settings_store::UserSettingsStore;
 
 /// Shared application state passed to every handler via axum `State`.
 #[derive(Clone)]
@@ -19,10 +19,13 @@ pub struct AppState {
     pub manager: ProxyManager,
     pub settings: Arc<UserSettingsStore>,
     pub bridge: Arc<crate::web::bridge::WebUiBridge>,
-    #[allow(dead_code)]
+    /// Bound port; also used by the auth middleware for the Host check.
     pub port: u16,
-    /// Send on this channel to trigger elevation + shutdown from the web UI.
-    pub elevate_tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<Vec<String>>>>>,
+    /// Per-launch auth token; required (header or `?token=`) on all /api routes.
+    pub auth_token: String,
+    /// Elevation requests from the web UI, consumed by the main event loop.
+    /// Capacity-1 channel: requests are single-flight.
+    pub elevate_tx: mpsc::Sender<Vec<String>>,
 }
 
 // ── Settings ──────────────────────────────────────────────────────────
@@ -90,11 +93,10 @@ pub async fn start_proxy(
         Err(err) => {
             let msg = err.to_string();
             let code = match &err {
-                zju_connect_gui::backend::proxy::StartError::AlreadyRunning => StatusCode::CONFLICT,
-                zju_connect_gui::backend::proxy::StartError::Validation(_) => {
-                    StatusCode::BAD_REQUEST
-                }
-                zju_connect_gui::backend::proxy::StartError::NeedsElevation => {
+                crate::backend::proxy::StartError::AlreadyRunning => StatusCode::CONFLICT,
+                crate::backend::proxy::StartError::SessionStopped => StatusCode::CONFLICT,
+                crate::backend::proxy::StartError::Validation(_) => StatusCode::BAD_REQUEST,
+                crate::backend::proxy::StartError::NeedsElevation => {
                     StatusCode::PRECONDITION_FAILED
                 }
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -133,14 +135,15 @@ pub async fn elevate(
         return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
     }
 
-    use zju_connect_gui::backend::relaunch_args::build_elevated_relaunch_args;
+    use crate::backend::relaunch_args::build_elevated_relaunch_args;
     let parent_pid = std::process::id();
     let args = build_elevated_relaunch_args(parent_pid);
 
-    let mut tx_guard = state.elevate_tx.lock().await;
-    if let Some(tx) = tx_guard.take() {
-        let _ = tx.send(args);
-    }
+    // The main event loop consumes this and performs the elevated relaunch. It
+    // keeps listening afterwards, so a failed relaunch (UAC denied / platform
+    // unsupported) can simply be retried from the UI. try_send: while a request
+    // is already queued, additional clicks are dropped (single-flight).
+    let _ = state.elevate_tx.try_send(args);
 
     StatusCode::OK.into_response()
 }
@@ -150,13 +153,17 @@ pub async fn elevate(
 #[derive(Deserialize)]
 pub struct SubmitInputRequest {
     pub value: String,
+    /// Optional input kind ("sms" / "callback" / "captcha") so the backend
+    /// can reject submissions that answer a different pending prompt.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 pub async fn submit_input(
     State(state): State<AppState>,
     Json(req): Json<SubmitInputRequest>,
 ) -> impl IntoResponse {
-    match state.manager.submit_input(&req.value) {
+    match state.manager.submit_input(&req.value, req.kind.as_deref()) {
         Ok(()) => StatusCode::OK.into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
     }
@@ -166,7 +173,6 @@ pub async fn submit_input(
 
 #[derive(Serialize)]
 pub struct StatusSnapshot {
-    pub running: bool,
     pub session_active: bool,
     pub ready: bool,
     pub awaiting: Option<String>,
@@ -175,7 +181,6 @@ pub struct StatusSnapshot {
 pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     let snap = state.manager.snapshot();
     Json(StatusSnapshot {
-        running: snap.session_active,
         session_active: snap.session_active,
         ready: snap.ready,
         awaiting: snap.awaiting,

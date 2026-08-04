@@ -1,6 +1,12 @@
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+/// Upper bound on buffered partial-line data. A pathological child that emits
+/// endless data without newlines must not grow the buffer without limit; once
+/// the cap is hit we keep only the tail (an unterminated multi-hundred-KB
+/// "line" is not a prompt anyway).
+const MAX_PENDING_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectedPrompt {
     Sms,
@@ -79,6 +85,10 @@ where
                     }
                     pending.drain(..consume);
                     on_line(&line);
+                }
+                if pending.len() > MAX_PENDING_BYTES {
+                    let excess = pending.len() - MAX_PENDING_BYTES;
+                    pending.drain(..excess);
                 }
                 let pending_str = String::from_utf8_lossy(&pending);
                 if !pending_str.trim().is_empty() {
@@ -181,5 +191,22 @@ mod tests {
         // No newline → only on_partial fires after the read; on EOF it flushes via on_line
         assert_eq!(lines, vec!["please enter sms code: "]);
         assert!(!partial_seen.is_empty());
+    }
+
+    #[tokio::test]
+    async fn consume_stream_caps_unbounded_partial_buffer() {
+        // A 256 KiB chunk with no newlines must not grow the pending buffer
+        // without bound; the tail is capped at MAX_PENDING_BYTES.
+        let input = vec![b'x'; MAX_PENDING_BYTES * 4];
+        let mut line_lengths = Vec::new();
+        consume_stream(
+            input.as_slice(),
+            |line| line_lengths.push(line.len()),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        // Complete lines: none. EOF flush: exactly one capped line.
+        assert_eq!(line_lengths, vec![MAX_PENDING_BYTES]);
     }
 }
