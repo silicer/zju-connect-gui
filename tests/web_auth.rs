@@ -20,7 +20,7 @@ async fn start_server() -> (TempDir, RunningServer) {
     let app_dir = tmp.path().to_path_buf();
     let manager = ProxyManager::new(app_dir.clone(), tokio::runtime::Handle::current());
     let settings = Arc::new(UserSettingsStore::new(&app_dir));
-    let (bridge, _rx) = WebUiBridge::new(8);
+    let bridge = WebUiBridge::new(8);
     let server = server::run(app_dir, manager, settings, Arc::new(bridge))
         .await
         .unwrap();

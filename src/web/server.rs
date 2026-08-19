@@ -28,7 +28,9 @@ const DEFAULT_PORT: u16 = 19823;
 /// Handle bundle returned by [`run`].
 pub struct RunningServer {
     pub port: u16,
-    /// Per-launch auth token embedded in the UI URL; never persisted.
+    /// Per-launch auth token embedded in the UI URL; not persisted server-side.
+    /// The web UI may keep the current launch token in browser localStorage to
+    /// allow refreshing / reopening the page without the query-string token.
     pub token: String,
     /// Elevation requests coming in from the web UI.
     pub elevate_rx: mpsc::Receiver<Vec<String>>,

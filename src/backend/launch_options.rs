@@ -14,6 +14,24 @@ pub const DEFAULT_EIP_AUTO_OPEN: bool = true;
 
 pub const SUPPORTED_PROTOCOLS: &[&str] = &["atrust", "easyconnect"];
 
+/// Initial ProxyBridge process-list default: one RDP client per desktop OS.
+/// Windows uses the built-in Remote Desktop client; Linux uses the FreeRDP
+/// client (`xfreerdp`). Other platforms have no bundled default.
+pub fn default_proxybridge_processes() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        vec!["mstsc.exe".into()]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec!["xfreerdp".into()]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        Vec::new()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LaunchOptions {

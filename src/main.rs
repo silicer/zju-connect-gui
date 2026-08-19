@@ -128,8 +128,7 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
         ProxyManager::with_config(app_dir.clone(), tokio::runtime::Handle::current(), cfg);
 
     // ── UI bridge + SSE channel ──────────────────────────────────
-    let (bridge, _rx) = WebUiBridge::new(256);
-    let bridge = Arc::new(bridge);
+    let bridge = Arc::new(WebUiBridge::new(256));
     manager.set_ui(bridge.clone());
 
     // ── Web server ───────────────────────────────────────────────
