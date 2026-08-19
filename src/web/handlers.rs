@@ -172,6 +172,7 @@ pub async fn submit_input(
 // ── Status snapshot ───────────────────────────────────────────────────
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StatusSnapshot {
     pub session_active: bool,
     pub ready: bool,

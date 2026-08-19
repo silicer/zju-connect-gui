@@ -336,9 +336,10 @@ document.addEventListener('alpine:init', () => {
         const r = await apiFetch('/api/status');
         if (r.ok) {
           const s = await r.json();
-          this.status.running = s.sessionActive;
+          const active = s.sessionActive ?? s.session_active;
+          this.status.running = active;
           this.status.ready = s.ready;
-          this.status.state = s.sessionActive ? (s.ready ? 'connected' : 'connecting') : 'stopped';
+          this.status.state = active ? (s.ready ? 'connected' : 'connecting') : 'stopped';
         }
       } catch (e) {
         if (e.authFailed) this.statusMessage = e.message;
@@ -405,9 +406,10 @@ document.addEventListener('alpine:init', () => {
         const r = await apiFetch('/api/status');
         if (r.ok) {
           const s = await r.json();
-          this.status.running = s.sessionActive;
+          const active = s.sessionActive ?? s.session_active;
+          this.status.running = active;
           this.status.ready = s.ready;
-          this.status.state = s.sessionActive ? (s.ready ? 'connected' : 'connecting') : 'stopped';
+          this.status.state = active ? (s.ready ? 'connected' : 'connecting') : 'stopped';
           if ((s.awaiting === 'sms' || s.awaiting === 'callback') &&
               (!this.modal.show || this.modal.inputKind !== s.awaiting)) {
             this.modal = {
