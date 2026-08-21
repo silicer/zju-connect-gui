@@ -28,14 +28,19 @@ use super::{ElevationError, SingleInstanceError, WaitError};
 /// `TerminateProcess`, which leaves TUN/DNS state dangling.
 ///
 /// Safe to call at startup; if a console is already attached (e.g. launched from
-/// `cmd.exe`), `AllocConsole` returns Err and we fall through to hiding whatever
-/// console we have.
+/// `cmd.exe`), `AllocConsole` returns Err and we leave that console alone —
+/// hiding it would hide the user's terminal window. Only a console we created
+/// ourselves is hidden.
 pub fn init_console_for_signaling() {
     unsafe {
-        let _ = AllocConsole();
-        let hwnd = GetConsoleWindow();
-        if hwnd.0 as usize != 0 {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+        // Only hide a console we created ourselves. If we're attached to an
+        // existing console (e.g. launched from cmd.exe), AllocConsole fails and
+        // hiding GetConsoleWindow() would hide the user's terminal window.
+        if AllocConsole().is_ok() {
+            let hwnd = GetConsoleWindow();
+            if hwnd.0 as usize != 0 {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
         }
     }
 }

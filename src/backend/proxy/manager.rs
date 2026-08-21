@@ -6,6 +6,7 @@ use crate::backend::proxy::captcha::{
 use crate::backend::proxy::logs::{
     classify_prompt, consume_stream, is_route_added, is_vpn_started, DetectedPrompt,
 };
+use crate::backend::proxy::proxybridge::{self, is_active as pb_is_active, ProxyBridge};
 use crate::backend::proxy::readiness::{check_tcp_connect, readiness_dial_address};
 use crate::backend::proxy::retry::{
     default_jitter, format_retry_delay, next_retry_delay, JitterFn, DEFAULT_RETRY_BASE_DELAY,
@@ -146,6 +147,8 @@ pub enum StartError {
     Spawn(std::io::Error),
     #[error("tun mode requires elevated application restart")]
     NeedsElevation,
+    #[error("session is no longer active")]
+    SessionStopped,
 }
 
 #[derive(Debug, Error)]
@@ -162,6 +165,16 @@ pub enum SubmitInputError {
     Empty,
     #[error("process is not running")]
     NotRunning,
+    #[error("waiting for {awaiting}, not {requested}")]
+    KindMismatch { awaiting: String, requested: String },
+    #[error("input kind is required (sms/callback/captcha)")]
+    MissingKind,
+    #[error("no input is currently requested")]
+    NotAwaiting,
+    #[error("input contains newline or control characters")]
+    InvalidValue,
+    #[error("input is too long (max 4096 bytes)")]
+    TooLong,
     #[error("io error: {0}")]
     Io(std::io::Error),
 }
@@ -170,6 +183,10 @@ struct State {
     session_active: bool,
     awaiting: Option<String>,
     captcha_polling: bool,
+    /// Session generation that owns the in-flight captcha poll task; the task
+    /// only clears `captcha_polling` if it still owns the flag.
+    captcha_poll_gen: u64,
+    captcha_poll_handle: Option<JoinHandle<()>>,
     captcha_path: PathBuf,
     eip_options: LaunchOptions,
     eip_opened: bool,
@@ -184,6 +201,9 @@ struct State {
     delayed_eip: Option<JoinHandle<()>>,
     retry_handle: Option<JoinHandle<()>>,
     readiness_handle: Option<JoinHandle<()>>,
+    proxybridge: Option<ProxyBridge>,
+    proxybridge_started: bool,
+    proxybridge_handle: Option<JoinHandle<()>>,
 }
 
 impl State {
@@ -192,6 +212,8 @@ impl State {
             session_active: false,
             awaiting: None,
             captcha_polling: false,
+            captcha_poll_gen: 0,
+            captcha_poll_handle: None,
             captcha_path: PathBuf::new(),
             eip_options: LaunchOptions::default(),
             eip_opened: false,
@@ -206,6 +228,9 @@ impl State {
             delayed_eip: None,
             retry_handle: None,
             readiness_handle: None,
+            proxybridge: None,
+            proxybridge_started: false,
+            proxybridge_handle: None,
         }
     }
 
@@ -225,6 +250,13 @@ impl State {
         if let Some(handle) = self.readiness_handle.take() {
             handle.abort();
         }
+    }
+
+    fn cancel_captcha_poll(&mut self) {
+        if let Some(handle) = self.captcha_poll_handle.take() {
+            handle.abort();
+        }
+        self.captcha_polling = false;
     }
 }
 
@@ -337,9 +369,19 @@ impl ProxyManager {
         }
         options.validate().map_err(StartError::Validation)?;
 
-        // TUN mode requires administrator privileges on Windows.
+        // TUN mode or ProxyBridge integration require administrator privileges.
         #[cfg(target_os = "windows")]
-        if options.tun_mode && !crate::backend::platform::is_process_elevated() {
+        if (options.tun_mode || pb_is_active(&options))
+            && !crate::backend::platform::is_process_elevated()
+        {
+            return Err(StartError::NeedsElevation);
+        }
+
+        // On Linux, check for root if ProxyBridge is active.
+        #[cfg(target_os = "linux")]
+        if (options.tun_mode || pb_is_active(&options))
+            && !crate::backend::platform::is_process_elevated()
+        {
             return Err(StartError::NeedsElevation);
         }
 
@@ -356,7 +398,7 @@ impl ProxyManager {
 
         let captcha_path = self.inner.app_dir.join(CAPTCHA_FILE_NAME);
 
-        {
+        let generation = {
             let mut state = self.inner.state.lock().expect("state mutex poisoned");
             state.captcha_path = captcha_path.clone();
             state.eip_options = options.clone();
@@ -367,33 +409,52 @@ impl ProxyManager {
             state.session_active = true;
             state.retry_attempt = 0;
             state.awaiting = None;
-            state.captcha_polling = false;
-        }
+            state.cancel_captcha_poll();
+            state.retry_generation
+        };
 
         let _ = std::fs::remove_file(&captcha_path);
 
-        match self.spawn_child(options.clone(), captcha_path.clone()) {
+        match self.spawn_child(options.clone(), captcha_path.clone(), generation) {
             Ok(()) => Ok(()),
             Err(err) => {
-                self.cleanup_failed_start();
+                self.cleanup_failed_start(generation);
                 Err(err)
             }
         }
     }
 
-    fn cleanup_failed_start(&self) {
-        let mut state = self.inner.state.lock().expect("state mutex poisoned");
-        state.session_active = false;
-        state.awaiting = None;
-        state.captcha_polling = false;
-        state.child_pid = None;
-        state.stdin_tx = None;
-        state.stop_tx = None;
-        drop(state);
+    fn cleanup_failed_start(&self, generation: u64) {
+        let (pb, pb_handle, pb_started) = {
+            let mut state = self.inner.state.lock().expect("state mutex poisoned");
+            // Only tear the session down if it still belongs to this start
+            // attempt: a concurrent start() (or a retry) may have taken over
+            // in the meantime and must not be clobbered.
+            if cleanup_failed_start_should_skip(&state, generation) {
+                return;
+            }
+            state.session_active = false;
+            state.awaiting = None;
+            state.cancel_captcha_poll();
+            state.child_pid = None;
+            state.stdin_tx = None;
+            state.stop_tx = None;
+            (
+                state.proxybridge.take(),
+                state.proxybridge_handle.take(),
+                std::mem::take(&mut state.proxybridge_started),
+            )
+        };
+        stop_proxybridge(pb, pb_handle, pb_started);
         self.inner.emit_state(ProxyState::Stopped, None);
     }
 
-    fn spawn_child(&self, options: LaunchOptions, captcha_path: PathBuf) -> Result<(), StartError> {
+    fn spawn_child(
+        &self,
+        options: LaunchOptions,
+        captcha_path: PathBuf,
+        generation: u64,
+    ) -> Result<(), StartError> {
         let bin_path = self
             .inner
             .config
@@ -428,6 +489,17 @@ impl ProxyManager {
 
         {
             let mut state = self.inner.state.lock().expect("state mutex poisoned");
+            // Guard against the stop()/retry/start races: a session that ended
+            // (stop), was taken over by a newer generation (a concurrent
+            // start() or retry that bumped retry_generation), or already owns a
+            // child (concurrent start() that registered first) must not leave
+            // this child running — it would hold the SOCKS port outside any
+            // supervised session. First-registration wins: the loser kills its
+            // child here and reports SessionStopped.
+            if spawn_guard_violated(&state, generation) {
+                let _ = child.start_kill();
+                return Err(StartError::SessionStopped);
+            }
             state.child_pid = pid;
             state.stdin_tx = Some(stdin_tx);
             state.stop_tx = Some(stop_tx);
@@ -436,11 +508,6 @@ impl ProxyManager {
         self.inner.emit_state(ProxyState::Running, None);
 
         let inner = self.inner.clone();
-        let generation = inner
-            .state
-            .lock()
-            .expect("state mutex poisoned")
-            .retry_generation;
         let captcha_for_supervise = captcha_path.clone();
         self.inner.runtime.spawn(supervise_child(
             inner,
@@ -458,7 +525,16 @@ impl ProxyManager {
     }
 
     pub fn stop(&self) -> Result<(), StopError> {
-        let (stop_tx, retry_handle, readiness_handle, delayed_eip, child_pid_present) = {
+        let (
+            stop_tx,
+            retry_handle,
+            readiness_handle,
+            delayed_eip,
+            pb,
+            pb_handle,
+            pb_started,
+            child_pid_present,
+        ) = {
             let mut state = self.inner.state.lock().expect("state mutex poisoned");
             state.retry_generation = state.retry_generation.wrapping_add(1);
             state.session_active = false;
@@ -466,15 +542,23 @@ impl ProxyManager {
             state.ready = false;
             state.ready_wait_gen = 0;
             state.awaiting = None;
-            state.captcha_polling = false;
+            state.cancel_captcha_poll();
             (
                 state.stop_tx.take(),
                 state.retry_handle.take(),
                 state.readiness_handle.take(),
                 state.delayed_eip.take(),
+                state.proxybridge.take(),
+                state.proxybridge_handle.take(),
+                std::mem::take(&mut state.proxybridge_started),
                 state.child_pid.is_some(),
             )
         };
+
+        // Stop ProxyBridge first (before zju-connect) so kernel-level
+        // interception is lifted while the SOCKS proxy is still alive.
+        stop_proxybridge(pb, pb_handle, pb_started);
+
         if let Some(handle) = retry_handle {
             handle.abort();
         }
@@ -495,28 +579,54 @@ impl ProxyManager {
         Ok(())
     }
 
-    pub fn submit_input(&self, value: &str) -> Result<(), SubmitInputError> {
+    /// Submit a line to the child's stdin. `kind` ("sms" / "callback" /
+    /// "captcha") identifies the prompt the caller is answering; while the
+    /// child is waiting for input the kind is *required* and must match, so a
+    /// stale SMS code cannot be fed to a captcha prompt. Values containing
+    /// newlines or control characters are rejected so a single submission
+    /// cannot smuggle extra lines into the child's stdin.
+    pub fn submit_input(&self, value: &str, kind: Option<&str>) -> Result<(), SubmitInputError> {
         let value = value.trim();
         if value.is_empty() {
             return Err(SubmitInputError::Empty);
         }
-        let stdin_tx = {
-            let state = self.inner.state.lock().expect("state mutex poisoned");
-            state.stdin_tx.clone()
-        };
-        let Some(tx) = stdin_tx else {
-            return Err(SubmitInputError::NotRunning);
-        };
-        tx.send(value.to_string())
-            .map_err(|_| SubmitInputError::NotRunning)?;
-        // Clear awaiting state on successful submit.
-        let inner = self.inner.clone();
-        let mut state = inner.state.lock().expect("state mutex poisoned");
-        if state.awaiting.is_some() {
-            state.awaiting = None;
-            drop(state);
-            inner.emit_state(ProxyState::Awaiting, None);
+        if value.len() > 4096 {
+            return Err(SubmitInputError::TooLong);
         }
+        // Reject newlines and (Unicode) line/paragraph separators: a single
+        // submission must not smuggle extra lines into the child's stdin.
+        if value.contains(['\n', '\r', '\u{2028}', '\u{2029}'])
+            || value.chars().any(|c| c.is_control())
+        {
+            return Err(SubmitInputError::InvalidValue);
+        }
+        let inner = self.inner.clone();
+        {
+            let mut state = inner.state.lock().expect("state mutex poisoned");
+            match state.awaiting.as_deref() {
+                Some(awaiting) => {
+                    let kind = kind.ok_or(SubmitInputError::MissingKind)?;
+                    if awaiting != kind {
+                        return Err(SubmitInputError::KindMismatch {
+                            awaiting: awaiting.to_string(),
+                            requested: kind.to_string(),
+                        });
+                    }
+                }
+                None => {
+                    // Nothing is waiting for input; writing anyway would sit in
+                    // the child's stdin buffer and poison its next prompt.
+                    return Err(SubmitInputError::NotAwaiting);
+                }
+            }
+            let tx = state.stdin_tx.clone().ok_or(SubmitInputError::NotRunning)?;
+            tx.send(value.to_string())
+                .map_err(|_| SubmitInputError::NotRunning)?;
+            // Clear awaiting while still holding the lock so two concurrent
+            // submissions cannot both pass the kind check.
+            state.awaiting = None;
+        }
+        inner.emit_state(ProxyState::Running, None);
         Ok(())
     }
 
@@ -652,7 +762,8 @@ async fn supervise_child(
         state.child_pid = None;
         state.stdin_tx = None;
         state.stop_tx = None;
-        state.captcha_polling = false;
+        // captcha polling cleanup is left to handle_process_exit, which knows
+        // whether this exit belongs to the current session or is stale.
     }
 
     handle_process_exit(inner, exit_status, generation).await;
@@ -738,31 +849,49 @@ fn request_captcha(inner: Arc<Inner>) {
             return;
         }
         state.captcha_polling = true;
+        state.captcha_poll_gen = state.retry_generation;
         state.captcha_path.clone()
     };
     inner.emit_state(ProxyState::Awaiting, None);
 
     let inner_for_poll = inner.clone();
-    inner.runtime.spawn(async move {
+    let handle = inner.runtime.spawn(async move {
         match poll_for_stable_captcha(&captcha_path).await {
             Ok(Some(bytes)) => {
-                let encoded = encode_captcha(&bytes);
-                inner_for_poll.show_window();
-                inner_for_poll.emit_event(ProxyEvent::NeedCaptcha {
-                    base64: encoded,
-                    updated_at_ms: chrono::Utc::now().timestamp_millis(),
-                });
+                // The session may have ended while we were polling (stop(), or
+                // the child exited), or a newer session may have taken over;
+                // never surface a captcha for a session we don't own.
+                let session_still_active = {
+                    let state = inner_for_poll.state.lock().expect("state mutex poisoned");
+                    state.session_active && state.captcha_poll_gen == state.retry_generation
+                };
+                if session_still_active {
+                    let encoded = encode_captcha(&bytes);
+                    inner_for_poll.show_window();
+                    inner_for_poll.emit_event(ProxyEvent::NeedCaptcha {
+                        base64: encoded,
+                        updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                    });
+                }
             }
             _ => {
                 let mut state = inner_for_poll.state.lock().expect("state mutex poisoned");
-                state.awaiting = None;
-                drop(state);
-                inner_for_poll.emit_state(ProxyState::Awaiting, None);
+                if state.session_active && state.captcha_poll_gen == state.retry_generation {
+                    state.awaiting = None;
+                    drop(state);
+                    inner_for_poll.emit_state(ProxyState::Awaiting, None);
+                }
             }
         }
         let mut state = inner_for_poll.state.lock().expect("state mutex poisoned");
-        state.captcha_polling = false;
+        // Only clear the flag if this task still owns it (a newer session may
+        // have started its own poll while we were finishing).
+        if state.captcha_poll_gen == state.retry_generation {
+            state.captcha_polling = false;
+        }
     });
+    let mut state = inner.state.lock().expect("state mutex poisoned");
+    state.captcha_poll_handle = Some(handle);
 }
 
 fn begin_http_ready_wait(inner: Arc<Inner>, bind: String) {
@@ -806,7 +935,7 @@ fn should_continue_ready_wait(inner: &Arc<Inner>, generation: u64) -> bool {
 }
 
 fn mark_ready(inner: Arc<Inner>, generation: u64) {
-    let should_open_eip = {
+    let (should_open_eip, should_start_pb, pb_options) = {
         let mut state = inner.state.lock().expect("state mutex poisoned");
         if generation != state.retry_generation || !state.session_active || state.ready {
             return;
@@ -814,19 +943,42 @@ fn mark_ready(inner: Arc<Inner>, generation: u64) {
         state.ready = true;
         state.ready_wait_gen = 0;
         state.retry_attempt = 0;
-        state.eip_options.eip_auto_open && !state.eip_opened
+        (
+            state.eip_options.eip_auto_open && !state.eip_opened,
+            pb_is_active(&state.eip_options),
+            state.eip_options.clone(),
+        )
     };
     inner.emit_state(ProxyState::Connected, Some("已启动".into()));
     if should_open_eip {
-        schedule_delayed_eip_open(inner, generation);
+        schedule_delayed_eip_open(inner.clone(), generation);
     }
+    if should_start_pb {
+        start_proxybridge(inner, pb_options);
+    }
+}
+
+/// True when a freshly spawned child must be killed immediately: the session
+/// ended (stop), a newer session/start bumped `retry_generation` while we
+/// were spawning, or a concurrent start() already registered its child
+/// (first-registration wins).
+/// True when a failed-start cleanup must leave the state alone: the session
+/// no longer belongs to this start attempt (generation moved on), or a
+/// concurrent start() already registered its child (first-registration wins;
+/// on any spawn_child error path we never registered one ourselves, so a
+/// present child_pid belongs to the winner).
+fn cleanup_failed_start_should_skip(state: &State, generation: u64) -> bool {
+    state.retry_generation != generation || state.child_pid.is_some()
+}
+
+fn spawn_guard_violated(state: &State, generation: u64) -> bool {
+    !state.session_active || generation != state.retry_generation || state.child_pid.is_some()
 }
 
 fn schedule_delayed_eip_open(inner: Arc<Inner>, generation: u64) {
     let delay = clamp_eip_open_delay((inner.config.eip_auto_open_delay)());
     let options = {
-        let mut state = inner.state.lock().expect("state mutex poisoned");
-        state.eip_opened = true;
+        let state = inner.state.lock().expect("state mutex poisoned");
         state.eip_options.clone()
     };
     let inner_for_open = inner.clone();
@@ -840,12 +992,15 @@ fn schedule_delayed_eip_open(inner: Arc<Inner>, generation: u64) {
             return;
         }
         if let Err(err) = (inner_for_open.config.eip_opener)(&options) {
-            let mut state = inner_for_open.state.lock().expect("state mutex poisoned");
-            if state.retry_generation == generation && state.session_active && state.ready {
-                state.eip_opened = false;
-            }
-            drop(state);
             inner_for_open.emit_log(format!("[eip] failed to open EIP URL: {err}"));
+            return;
+        }
+        // Mark as opened only after the browser was actually launched. If the
+        // session drops during the delay (or the opener fails), eip_opened
+        // stays false and the next successful reconnect retries the open.
+        let mut state = inner_for_open.state.lock().expect("state mutex poisoned");
+        if state.retry_generation == generation && state.session_active && state.ready {
+            state.eip_opened = true;
         }
     });
     let mut state = inner.state.lock().expect("state mutex poisoned");
@@ -866,39 +1021,20 @@ fn clamp_eip_open_delay(delay: Duration) -> Duration {
 async fn handle_process_exit(
     inner: Arc<Inner>,
     exit_status: std::io::Result<std::process::ExitStatus>,
-    _generation: u64,
+    generation: u64,
 ) {
     // After exit, decide whether to retry, surface a blocked-awaiting message, or
     // simply transition to stopped.
     let action = {
         let mut state = inner.state.lock().expect("state mutex poisoned");
-        if !state.session_active {
-            state.cancel_delayed_eip();
-            state.eip_opened = false;
-            state.ready = false;
-            state.ready_wait_gen = 0;
-            state.retry_attempt = 0;
-            ExitAction::EmitStopped
-        } else if let Some(reason) = state.awaiting.clone() {
-            state.session_active = false;
-            state.cancel_delayed_eip();
-            state.eip_opened = false;
-            state.ready = false;
-            state.ready_wait_gen = 0;
-            state.retry_attempt = 0;
-            state.awaiting = None;
-            state.captcha_polling = false;
-            ExitAction::AwaitingBlocked(reason)
-        } else {
-            state.cancel_delayed_eip();
-            state.eip_opened = false;
-            state.ready = false;
-            state.retry_generation = state.retry_generation.wrapping_add(1);
-            ExitAction::ScheduleRetry
-        }
+        decide_exit_action(&mut state, generation)
     };
 
     match action {
+        ExitAction::Ignore => {
+            // A stale exit from a previous session; the new session owns the
+            // state. Nothing to emit.
+        }
         ExitAction::EmitStopped => {
             inner.emit_state(ProxyState::Stopped, None);
         }
@@ -935,9 +1071,47 @@ async fn handle_process_exit(
 }
 
 enum ExitAction {
+    /// Exit belongs to a previous session; do nothing.
+    Ignore,
     EmitStopped,
     AwaitingBlocked(String),
     ScheduleRetry,
+}
+
+/// Decide what to do after the supervised child exited, mutating `state`.
+///
+/// `generation` is the session generation the exiting child belonged to. A
+/// stale exit — the previous child's supervise task finishing its teardown
+/// after a new session already started — must not touch the new session's
+/// state, so it yields `Ignore`. Without this guard a stale exit would bump
+/// `retry_generation` and silently abort the new session's readiness polling
+/// (UI stuck on "connecting" despite a working VPN).
+fn decide_exit_action(state: &mut State, generation: u64) -> ExitAction {
+    if state.session_active && generation != state.retry_generation {
+        return ExitAction::Ignore;
+    }
+    state.cancel_delayed_eip();
+    state.cancel_captcha_poll();
+    state.ready = false;
+    if !state.session_active {
+        state.eip_opened = false;
+        state.ready_wait_gen = 0;
+        state.retry_attempt = 0;
+        ExitAction::EmitStopped
+    } else if let Some(reason) = state.awaiting.clone() {
+        state.session_active = false;
+        state.awaiting = None;
+        state.eip_opened = false;
+        state.ready_wait_gen = 0;
+        state.retry_attempt = 0;
+        ExitAction::AwaitingBlocked(reason)
+    } else {
+        // Deliberately do NOT reset eip_opened here: the EIP browser opens
+        // once per *manual* session, and an automatic reconnect must not spawn
+        // a fresh browser tab. (start() resets it for manual sessions.)
+        state.retry_generation = state.retry_generation.wrapping_add(1);
+        ExitAction::ScheduleRetry
+    }
 }
 
 fn schedule_retry(inner: Arc<Inner>) -> (u32, Duration) {
@@ -977,6 +1151,21 @@ async fn run_retry_attempt(inner: Arc<Inner>, generation: u64) {
         state.last_options.clone()
     };
 
+    // Re-validate before announcing: a stop() may have landed between the
+    // guard lock and this point, and announcing Connecting after Stopped
+    // would leave the UI stuck on "正在重新连接..." while the session is
+    // actually stopped.
+    let still_valid = {
+        let state = inner.state.lock().expect("state mutex poisoned");
+        generation == state.retry_generation
+            && state.session_active
+            && state.awaiting.is_none()
+            && state.child_pid.is_none()
+    };
+    if !still_valid {
+        return;
+    }
+
     inner.emit_state(ProxyState::Connecting, Some("正在重新连接...".into()));
 
     // Spawn child afresh; we re-enter the same path as Start::spawn_child but without
@@ -989,9 +1178,16 @@ async fn run_retry_attempt(inner: Arc<Inner>, generation: u64) {
         let mut state = inner.state.lock().expect("state mutex poisoned");
         state.captcha_path = captcha_path.clone();
         state.eip_options = options.clone();
-        state.eip_opened = false;
+        // Note: eip_opened is deliberately NOT reset here. The EIP browser
+        // opens once per *manual* session (start()); auto-reconnects must not
+        // spawn a fresh browser tab each time.
     }
-    if let Err(err) = manager.spawn_child(options, captcha_path) {
+    if let Err(err) = manager.spawn_child(options, captcha_path, generation) {
+        if matches!(err, StartError::SessionStopped) {
+            // The session ended (stop) or a newer session/start took over
+            // while we were spawning; step aside — the winner owns the state.
+            return;
+        }
         let (attempt, delay) = schedule_retry(inner.clone());
         inner.emit_log(format!(
             "[reconnect] retry start failed: {err}; retrying in {} (attempt {attempt})",
@@ -1006,5 +1202,375 @@ async fn run_retry_attempt(inner: Arc<Inner>, generation: u64) {
             attempt,
             delay,
         );
+    }
+}
+
+// ── ProxyBridge integration ────────────────────────────────────────────
+
+/// Stop ProxyBridge (if started) and abort its log-forwarding task.
+/// Takes the resources out of `State` first so it can be called without
+/// holding the state lock (the library's `Stop` may take a moment).
+fn stop_proxybridge(pb: Option<ProxyBridge>, pb_handle: Option<JoinHandle<()>>, pb_started: bool) {
+    if pb_started {
+        if let Some(pb) = pb {
+            // PB's Stop tears down iptables / WinDivert rules and may block for
+            // a moment; we're on the tokio runtime here, so park the current
+            // task on a blocking thread instead of tying up a worker.
+            tokio::task::block_in_place(|| pb.stop());
+        }
+    }
+    if let Some(handle) = pb_handle {
+        handle.abort();
+    }
+}
+
+/// Start ProxyBridge (in-process library binding). Called once zju-connect
+/// has reached the "ready" state.
+///
+/// Idempotent: on reconnects the bridge keeps running (the SOCKS proxy
+/// address does not change between retries), so this is a no-op when the
+/// bridge is already started. Changing rules requires a full stop/start
+/// cycle, which tears the bridge down in `stop()`.
+fn start_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
+    {
+        let state = inner.state.lock().expect("state mutex poisoned");
+        if state.proxybridge_started {
+            return;
+        }
+    }
+
+    let app_dir = inner.app_dir.clone();
+    let pb_path =
+        proxybridge::find_proxybridge_library(options.proxybridge_path.as_deref(), &app_dir);
+
+    // Log forwarding channel: the C callback runs on ProxyBridge's internal
+    // threads, so it only hands lines to an unbounded sender; a tokio task
+    // forwards them into our log stream.
+    let (log_tx, mut log_rx) = mpsc::unbounded_channel::<String>();
+    let inner_for_logs = inner.clone();
+    let log_handle = inner.runtime.spawn(async move {
+        while let Some(line) = log_rx.recv().await {
+            inner_for_logs.emit_log(format!("[proxybridge] {line}"));
+        }
+    });
+
+    // dlopen / driver setup / Start can all block for a while; keep them off
+    // the async worker threads.
+    let pb = match tokio::task::block_in_place(|| {
+        proxybridge::ProxyBridge::load(pb_path.as_deref(), log_tx)
+    }) {
+        Ok(pb) => pb,
+        Err(e) => {
+            log_handle.abort();
+            let hint = proxybridge::install_hint();
+            inner.emit_log(format!(
+                "[proxybridge] failed to load ProxyBridge library: {e} {hint}"
+            ));
+            return;
+        }
+    };
+
+    // Make sure the WinDivert kernel driver is available before starting
+    // interception (Windows only; no-op elsewhere).
+    #[cfg(target_os = "windows")]
+    if let Err(e) = tokio::task::block_in_place(|| {
+        crate::backend::proxy::windivert::ensure_windivert_driver(&app_dir)
+    }) {
+        log_handle.abort();
+        let hint = proxybridge::install_hint();
+        inner.emit_log(format!(
+            "[proxybridge] WinDivert driver unavailable: {e} {hint}"
+        ));
+        return;
+    }
+
+    if let Err(e) = tokio::task::block_in_place(|| pb.start(&options)) {
+        log_handle.abort();
+        inner.emit_log(format!("[proxybridge] failed to start: {e}"));
+        return;
+    }
+
+    {
+        let mut state = inner.state.lock().expect("state mutex poisoned");
+        // A concurrent stop() may have ended the session while we were
+        // loading; tear the bridge down again in that case.
+        if !state.session_active {
+            drop(state);
+            tokio::task::block_in_place(|| pb.stop());
+            log_handle.abort();
+            return;
+        }
+        state.proxybridge = Some(pb);
+        state.proxybridge_started = true;
+        state.proxybridge_handle = Some(log_handle);
+    }
+    inner.emit_log("[proxybridge] started".to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_session(generation: u64) -> State {
+        let mut state = State::new();
+        state.session_active = true;
+        state.retry_generation = generation;
+        state
+    }
+
+    #[test]
+    fn spawn_guard_rejects_inactive_session() {
+        let mut state = state_with_session(1);
+        state.session_active = false;
+        assert!(spawn_guard_violated(&state, 1));
+    }
+
+    #[test]
+    fn spawn_guard_rejects_stale_generation() {
+        // A concurrent start() bumped the generation while we were spawning.
+        let state = state_with_session(3);
+        assert!(spawn_guard_violated(&state, 2));
+    }
+
+    #[test]
+    fn spawn_guard_rejects_occupied_child_slot() {
+        // Concurrent double start(): the other call registered first. The
+        // generation alone cannot distinguish the loser (both calls bumped it
+        // before either spawned), so the registered child_pid is the tiebreak.
+        let mut state = state_with_session(2);
+        state.child_pid = Some(1234);
+        assert!(spawn_guard_violated(&state, 2));
+    }
+
+    #[test]
+    fn spawn_guard_accepts_clean_session() {
+        let state = state_with_session(5);
+        assert!(!spawn_guard_violated(&state, 5));
+    }
+
+    #[test]
+    fn cleanup_skips_when_winner_registered() {
+        // The losing start() must not tear down the winner's session: even
+        // with a matching generation (both calls bumped it before either
+        // spawned), a registered child_pid means the session belongs to the
+        // concurrent winner.
+        let mut state = state_with_session(2);
+        state.child_pid = Some(5678);
+        assert!(cleanup_failed_start_should_skip(&state, 2));
+    }
+
+    #[test]
+    fn cleanup_proceeds_when_no_winner() {
+        // Normal failed start: nobody else registered, cleanup must run.
+        let state = state_with_session(2);
+        assert!(!cleanup_failed_start_should_skip(&state, 2));
+        let state = state_with_session(3);
+        assert!(cleanup_failed_start_should_skip(&state, 2));
+    }
+
+    #[test]
+    fn exit_action_ignores_stale_generation() {
+        // A stale exit from the previous session must not disturb the new one.
+        let mut state = state_with_session(2);
+        let action = decide_exit_action(&mut state, 1);
+        assert!(matches!(action, ExitAction::Ignore));
+        assert!(state.session_active);
+        assert_eq!(state.retry_generation, 2);
+        assert_eq!(state.retry_attempt, 0);
+    }
+
+    #[test]
+    fn exit_action_schedules_retry_for_current_generation() {
+        let mut state = state_with_session(7);
+        let action = decide_exit_action(&mut state, 7);
+        assert!(matches!(action, ExitAction::ScheduleRetry));
+        assert_eq!(state.retry_generation, 8);
+        assert!(state.session_active);
+    }
+
+    #[test]
+    fn exit_action_emits_stopped_when_session_inactive_even_if_stale() {
+        // The stop() path must still emit Stopped regardless of generation.
+        let mut state = state_with_session(9);
+        state.session_active = false;
+        let action = decide_exit_action(&mut state, 3);
+        assert!(matches!(action, ExitAction::EmitStopped));
+    }
+
+    #[test]
+    fn exit_action_awaiting_blocked_ends_session() {
+        let mut state = state_with_session(1);
+        state.awaiting = Some("sms".into());
+        let action = decide_exit_action(&mut state, 1);
+        assert!(matches!(
+            action,
+            ExitAction::AwaitingBlocked(reason) if reason == "sms"
+        ));
+        assert!(!state.session_active);
+        assert!(state.awaiting.is_none());
+    }
+
+    #[test]
+    fn exit_action_schedule_retry_preserves_eip_opened() {
+        // Automatic reconnect must NOT reopen the EIP browser tab.
+        let mut state = state_with_session(1);
+        state.eip_opened = true;
+        assert!(matches!(
+            decide_exit_action(&mut state, 1),
+            ExitAction::ScheduleRetry
+        ));
+        assert!(state.eip_opened);
+    }
+
+    #[test]
+    fn exit_action_stopped_resets_eip_opened() {
+        let mut state = state_with_session(1);
+        state.session_active = false;
+        state.eip_opened = true;
+        assert!(matches!(
+            decide_exit_action(&mut state, 1),
+            ExitAction::EmitStopped
+        ));
+        assert!(!state.eip_opened);
+    }
+
+    #[test]
+    fn submit_input_rejects_kind_mismatch() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("captcha".to_string());
+        }
+        let err = manager.submit_input("1234", Some("sms")).unwrap_err();
+        assert!(
+            matches!(err, SubmitInputError::KindMismatch { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(err.to_string(), "waiting for captcha, not sms");
+    }
+
+    #[test]
+    fn submit_input_requires_kind_when_awaiting() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("sms".to_string());
+        }
+        let err = manager.submit_input("1234", None).unwrap_err();
+        assert!(matches!(err, SubmitInputError::MissingKind), "got {err:?}");
+    }
+
+    #[test]
+    fn submit_input_rejects_when_nothing_awaiting() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        let err = manager.submit_input("1234", Some("sms")).unwrap_err();
+        assert!(matches!(err, SubmitInputError::NotAwaiting), "got {err:?}");
+    }
+
+    #[test]
+    fn submit_input_rejects_control_characters() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("sms".to_string());
+            let (tx, _rx) = mpsc::unbounded_channel::<String>();
+            state.stdin_tx = Some(tx);
+        }
+        let err = manager.submit_input("123\n456", Some("sms")).unwrap_err();
+        assert!(matches!(err, SubmitInputError::InvalidValue), "got {err:?}");
+    }
+
+    #[test]
+    fn submit_input_rejects_unicode_line_separators() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("sms".to_string());
+            let (tx, _rx) = mpsc::unbounded_channel::<String>();
+            state.stdin_tx = Some(tx);
+        }
+        // U+2028 (LINE SEPARATOR) / U+2029 (PARAGRAPH SEPARATOR) are not C0/C1
+        // controls, but must not be smuggled into the child's stdin either.
+        for value in ["12\u{2028}34", "12\u{2029}34"] {
+            let err = manager.submit_input(value, Some("sms")).unwrap_err();
+            assert!(matches!(err, SubmitInputError::InvalidValue), "got {err:?}");
+        }
+    }
+
+    #[test]
+    fn submit_input_rejects_oversized_value() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("sms".to_string());
+            let (tx, _rx) = mpsc::unbounded_channel::<String>();
+            state.stdin_tx = Some(tx);
+        }
+        let big = "x".repeat(5000);
+        let err = manager.submit_input(&big, Some("sms")).unwrap_err();
+        assert!(matches!(err, SubmitInputError::TooLong), "got {err:?}");
+    }
+
+    #[test]
+    fn submit_input_matching_kind_proceeds_when_running() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("sms".to_string());
+        }
+        // Kind matches, but there is no child → NotRunning (kind check passed).
+        let err = manager.submit_input("1234", Some("sms")).unwrap_err();
+        assert!(matches!(err, SubmitInputError::NotRunning), "got {err:?}");
+    }
+
+    #[derive(Clone, Default)]
+    struct TestBridge(Arc<std::sync::Mutex<Vec<ProxyEvent>>>);
+
+    impl UiBridge for TestBridge {
+        fn emit_event(&self, event: ProxyEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+        fn show_window(&self) {}
+    }
+
+    #[test]
+    fn submit_input_clears_awaiting_and_emits_running() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        let bridge = Arc::new(TestBridge::default());
+        manager.set_ui(bridge.clone());
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.awaiting = Some("sms".to_string());
+            state.stdin_tx = Some(tx);
+        }
+        manager.submit_input("1234", Some("sms")).unwrap();
+        {
+            let state = manager.inner.state.lock().unwrap();
+            assert!(state.awaiting.is_none());
+        }
+        let events = bridge.0.lock().unwrap();
+        assert!(matches!(
+            events.last(),
+            Some(ProxyEvent::State {
+                state: ProxyState::Running,
+                ..
+            })
+        ));
     }
 }

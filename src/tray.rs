@@ -31,8 +31,8 @@ mod desktop_impl;
 #[cfg(not(target_os = "linux"))]
 pub use desktop_impl::TrayController;
 
-fn open_web_ui(port: u16) {
-    let url = format!("http://localhost:{port}");
+fn open_web_ui(port: u16, token: &str) {
+    let url = format!("http://localhost:{port}/?token={token}");
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("rundll32")

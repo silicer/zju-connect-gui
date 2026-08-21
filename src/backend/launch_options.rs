@@ -14,6 +14,24 @@ pub const DEFAULT_EIP_AUTO_OPEN: bool = true;
 
 pub const SUPPORTED_PROTOCOLS: &[&str] = &["atrust", "easyconnect"];
 
+/// Initial ProxyBridge process-list default: one RDP client per desktop OS.
+/// Windows uses the built-in Remote Desktop client; Linux uses the FreeRDP
+/// client (`xfreerdp`). Other platforms have no bundled default.
+pub fn default_proxybridge_processes() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        vec!["mstsc.exe".into()]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec!["xfreerdp".into()]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        Vec::new()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LaunchOptions {
@@ -33,6 +51,12 @@ pub struct LaunchOptions {
     pub eip_browser_args: Vec<String>,
     pub tun_mode: bool,
     pub debug_dump: bool,
+    #[serde(default)]
+    pub proxybridge_enabled: bool,
+    #[serde(default)]
+    pub proxybridge_processes: Vec<String>,
+    #[serde(default)]
+    pub proxybridge_path: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
@@ -73,6 +97,11 @@ pub fn normalize_launch_options(mut options: LaunchOptions) -> LaunchOptions {
     options.client_data_file = options.client_data_file.trim().to_string();
     options.eip_browser_program = options.eip_browser_program.trim().to_string();
     options.eip_browser_args = normalize_string_list(options.eip_browser_args);
+    options.proxybridge_processes = normalize_string_list(options.proxybridge_processes);
+    options.proxybridge_path = options
+        .proxybridge_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
 
     if options.protocol.is_empty() {
         options.protocol = DEFAULT_PROTOCOL.to_string();

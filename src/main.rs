@@ -4,25 +4,27 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod tray;
-mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
-
-use tokio::sync::oneshot;
 
 use zju_connect_gui::backend::paths::resolve_app_dir;
 use zju_connect_gui::backend::platform;
 use zju_connect_gui::backend::relaunch_args::{parse_elevated_relaunch_args, ElevatedRelaunchArgs};
 use zju_connect_gui::backend::{
     pending_connect_store::PendingConnectStore,
-    proxy::{ProxyManager, ProxyManagerConfig, UiBridge},
-    settings_store::UserSettingsStore,
+    proxy::{self, ProxyManager, ProxyManagerConfig, UiBridge},
+    settings_store::{default_launch_options, UserSettingsStore},
 };
-
-use web::bridge::WebUiBridge;
+use zju_connect_gui::web::bridge::WebUiBridge;
+use zju_connect_gui::web::server;
 
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
+
+/// How long the elevated child polls for the instance lock before giving up.
+/// The parent only releases the lock after `ShellExecuteW("runas")` returns,
+/// which can be delayed by a slow UAC consent prompt — allow several minutes.
+const ELEVATED_LOCK_WAIT: Duration = Duration::from_secs(300);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -62,68 +64,86 @@ fn acquire_lock(
 async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
     let app_dir = resolve_app_dir()?;
 
-    // ── For elevated child: wait for parent to exit so we can acquire the
-    //    instance lock and rebind the web port. ────────────────────────
-    if relaunch.wait_parent_pid > 0 {
-        let pid = relaunch.wait_parent_pid;
-        log::info!("waiting for parent process {pid} to exit...");
-        let _ = tokio::task::spawn_blocking(move || {
-            let _ = platform::wait_for_process_exit(pid, Duration::from_secs(15));
-        })
-        .await;
-    }
-
     // ── Single-instance lock ───────────────────────────────────────
-    // Elevated child: parent should be dead by now, lock is free.
+    // Elevated child: the parent drops the lock right before relaunching us,
+    // but `ShellExecuteW("runas")` can sit on the UAC consent prompt for a
+    // long time — so poll for the lock instead of trusting a fixed delay.
     // Normal launch: refuse if another instance is already running.
-    let _instance_guard = match acquire_lock(&app_dir) {
-        Ok(guard) => guard,
-        Err(InstanceLockOutcome::AlreadyRunning) => {
-            log::warn!("zju-connect-gui is already running; exiting");
+    let mut _instance_guard: Option<platform::SingleInstanceGuard> = None;
+    if relaunch.wait_parent_pid > 0 {
+        let parent_pid = relaunch.wait_parent_pid;
+        let deadline = tokio::time::Instant::now() + ELEVATED_LOCK_WAIT;
+        while tokio::time::Instant::now() < deadline {
+            match acquire_lock(&app_dir) {
+                Ok(guard) => {
+                    _instance_guard = guard;
+                    break;
+                }
+                Err(InstanceLockOutcome::AlreadyRunning) => {
+                    // The parent drops the lock before exiting. If it is already
+                    // gone while the lock is still busy, another instance owns
+                    // it — nothing left to wait for.
+                    let parent_gone = tokio::task::block_in_place(|| {
+                        platform::wait_for_process_exit(parent_pid, Duration::from_millis(100))
+                            .is_ok()
+                    });
+                    if parent_gone {
+                        log::warn!(
+                            "parent instance exited but the lock is held elsewhere; exiting"
+                        );
+                        return Ok(());
+                    }
+                }
+                Err(InstanceLockOutcome::Unavailable(err)) => {
+                    log::warn!("single-instance lock unavailable: {err}");
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if _instance_guard.is_none() {
+            log::warn!("parent instance never released the instance lock; exiting");
             return Ok(());
         }
-        Err(InstanceLockOutcome::Unavailable(err)) => {
-            log::warn!("single-instance lock unavailable: {err}");
-            None
-        }
-    };
+    } else {
+        _instance_guard = match acquire_lock(&app_dir) {
+            Ok(guard) => guard,
+            Err(InstanceLockOutcome::AlreadyRunning) => {
+                log::warn!("zju-connect-gui is already running; exiting");
+                return Ok(());
+            }
+            Err(InstanceLockOutcome::Unavailable(err)) => {
+                log::warn!("single-instance lock unavailable: {err}");
+                None
+            }
+        };
+    }
 
     // ── Core subsystems ───────────────────────────────────────────
     let settings = Arc::new(UserSettingsStore::new(&app_dir));
     let pending = Arc::new(PendingConnectStore::new(&app_dir));
-
-    let _saved = settings.load().unwrap_or_else(|err| {
-        log::warn!("settings load failed: {err}; using defaults");
-        zju_connect_gui::backend::settings_store::default_launch_options()
-    });
 
     let cfg = ProxyManagerConfig::default();
     let manager =
         ProxyManager::with_config(app_dir.clone(), tokio::runtime::Handle::current(), cfg);
 
     // ── UI bridge + SSE channel ──────────────────────────────────
-    let (bridge, _rx) = WebUiBridge::new(256);
-    let bridge = Arc::new(bridge);
+    let bridge = Arc::new(WebUiBridge::new(256));
     manager.set_ui(bridge.clone());
 
     // ── Web server ───────────────────────────────────────────────
-    let (port, app_state, server_handle) = web::server::run(
+    let server = server::run(
         app_dir.clone(),
         manager.clone(),
         settings.clone(),
         bridge.clone(),
     )
     .await?;
-    web::server::persist_port(&app_dir, port).await;
-
-    // ── Elevate channel ──────────────────────────────────────────
-    let elevate_rx = {
-        let mut guard = app_state.elevate_tx.lock().await;
-        // Swap out the tx so the handler can use the oneshot.
-        let (tx, rx) = oneshot::channel();
-        *guard = Some(tx);
-        rx
-    };
+    let port = server.port;
+    let token = server.token.clone();
+    server::persist_port(&app_dir, port).await;
+    let server_handle = server.handle;
+    let mut elevate_rx = server.elevate_rx;
 
     // ── Resume pending connect (elevation flow) ──────────────────
     if relaunch.resume_pending_connect {
@@ -144,22 +164,30 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
                     "Process is NOT elevated after UAC. UAC may be disabled. \
                      Please enable UAC or run this program as Administrator."
                 );
-                bridge.emit_event(zju_connect_gui::backend::proxy::ProxyEvent::Error(
+                bridge.emit_event(proxy::ProxyEvent::Error(
                     "提权失败：系统未授予管理员权限。请启用 UAC 或以管理员身份运行本程序。"
                         .to_string(),
                 ));
-                // Don't attempt TUN mode if we're not elevated — it will just fail.
-                // Load settings and disable TUN mode before retrying.
-                let mut options = settings.load().unwrap_or_default();
-                if options.tun_mode {
-                    log::warn!("disabling TUN mode because process is not elevated");
+                // Don't attempt TUN mode or ProxyBridge if we're not elevated —
+                // they will just fail. Disable both before retrying.
+                let mut options = settings.load().unwrap_or_else(|err| {
+                    log::warn!("settings load failed: {err}; using defaults");
+                    default_launch_options()
+                });
+                let needs_elev = options.tun_mode || proxy::proxybridge::is_active(&options);
+                if needs_elev {
+                    log::warn!("disabling TUN mode / ProxyBridge because process is not elevated");
                     options.tun_mode = false;
+                    options.proxybridge_enabled = false;
                 }
                 if let Err(err) = manager.start(options) {
                     log::error!("resume connect failed: {err}");
                 }
             } else {
-                let options = settings.load().unwrap_or_default();
+                let options = settings.load().unwrap_or_else(|err| {
+                    log::warn!("settings load failed: {err}; using defaults");
+                    default_launch_options()
+                });
                 if let Err(err) = manager.start(options) {
                     log::error!("resume connect failed: {err}");
                 }
@@ -168,75 +196,86 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
     }
 
     // ── Tray icon (best-effort) ─────────────────────────────────
-    let (quit_rx, _tray) = match tray::TrayController::new(port) {
-        Ok((t, rx)) => (Some(rx), Some(t)),
+    let quit_rx = match spawn_tray(port, token.clone(), bridge.clone()) {
+        Ok(rx) => Some(rx),
         Err(err) => {
             log::warn!("tray icon disabled: {err}");
-            (None, None)
+            None
         }
     };
 
     // ── Open browser ─────────────────────────────────────────────
-    open_browser(port);
+    open_browser(port, &token);
 
-    // ── Wait for shutdown or elevation signal ────────────────────
-    let should_relaunch = {
-        let elevate = elevate_rx;
-        let ctrl_c = tokio::signal::ctrl_c();
-
-        tokio::pin!(elevate);
-        tokio::pin!(ctrl_c);
-
-        let mut result = false;
-        if let Some(mut quit_rx) = quit_rx {
-            tokio::select! {
-                Ok(args) = &mut elevate => {
-                    log::info!("elevation requested from web UI");
-                    drop(_instance_guard);
-                    if let Err(err) = pending.mark_resume_connect() {
-                        log::error!("failed to mark resume connect: {err}");
-                    }
-                    web::server::persist_port(&app_dir, port).await;
-                    if let Err(err) = platform::relaunch_self_elevated(&args) {
-                        log::error!("elevation failed: {err}");
-                    } else {
-                        log::info!("elevated process launched, exiting");
-                    }
-                    result = true;
-                }
-                _ = &mut quit_rx => {
-                    log::info!("quit requested from tray menu");
-                }
-                _ = &mut ctrl_c => {
-                    log::info!("received Ctrl+C, shutting down");
+    // ── Event loop: elevation request, tray quit, Ctrl+C ─────────
+    // A failed elevation (UAC denied / unsupported platform) keeps the app
+    // running and surfaces the error via SSE; only a successful relaunch
+    // exits this process.
+    let quit_fut = async move {
+        match quit_rx {
+            Some(rx) => {
+                if rx.await.is_err() {
+                    // The tray thread ended without a quit click (e.g. tray
+                    // creation failed on a desktop without a StatusNotifier
+                    // host). Keep running — only an explicit quit ends us.
+                    std::future::pending::<()>().await;
                 }
             }
-        } else {
-            tokio::select! {
-                Ok(args) = &mut elevate => {
-                    log::info!("elevation requested from web UI");
-                    drop(_instance_guard);
-                    if let Err(err) = pending.mark_resume_connect() {
-                        log::error!("failed to mark resume connect: {err}");
-                    }
-                    web::server::persist_port(&app_dir, port).await;
-                    if let Err(err) = platform::relaunch_self_elevated(&args) {
-                        log::error!("elevation failed: {err}");
-                    } else {
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(quit_fut);
+
+    let mut relaunched = false;
+    loop {
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+        tokio::select! {
+            Some(args) = elevate_rx.recv() => {
+                log::info!("elevation requested from web UI");
+                // Coalesce: if another request arrived while we were busy,
+                // only handle the latest one.
+                let mut args = args;
+                while let Ok(latest) = elevate_rx.try_recv() {
+                    args = latest;
+                }
+                if let Err(err) = pending.mark_resume_connect() {
+                    log::error!("failed to mark resume connect: {err}");
+                }
+                server::persist_port(&app_dir, port).await;
+                match platform::relaunch_self_elevated(&args) {
+                    Ok(()) => {
                         log::info!("elevated process launched, exiting");
+                        drop(_instance_guard);
+                        relaunched = true;
+                        break;
                     }
-                    result = true;
+                    Err(err) => {
+                        log::error!("elevation failed: {err}");
+                        // Don't leave a stale resume marker behind: a later
+                        // normal launch would otherwise auto-connect without
+                        // the user asking for it.
+                        let _ = pending.clear();
+                        // Stale elevation clicks queued while this attempt was
+                        // in flight are just repeat UAC prompts; drop them.
+                        while elevate_rx.try_recv().is_ok() {}
+                        bridge.emit_event(proxy::ProxyEvent::Error(format!("提权失败：{err}")));
+                    }
                 }
-                _ = ctrl_c => {
-                    log::info!("received Ctrl+C, shutting down");
-                }
+            }
+            _ = &mut quit_fut => {
+                log::info!("quit requested from tray menu");
+                break;
+            }
+            _ = &mut ctrl_c => {
+                log::info!("received Ctrl+C, shutting down");
+                break;
             }
         }
-        result
-    };
+    }
 
-    if should_relaunch {
-        // Already dropped lock and launched new process; just exit.
+    if relaunched {
+        // Lock already dropped and the elevated process launched; just exit.
         log::info!("goodbye (relaunch)");
         return Ok(());
     }
@@ -260,9 +299,47 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn open_browser(port: u16) {
-    let url = format!("http://localhost:{port}");
-    log::info!("opening browser at {url}");
+/// Create the tray icon on a dedicated OS thread.
+///
+/// On Linux, ksni's blocking API builds its own current-thread tokio runtime
+/// and calls `block_on` internally, which panics when invoked from inside an
+/// existing runtime — so the tray must be created on a plain (non-tokio)
+/// thread on every platform. Returns a oneshot that fires when the user picks
+/// "退出".
+fn spawn_tray(
+    port: u16,
+    token: String,
+    bridge: Arc<WebUiBridge>,
+) -> std::io::Result<tokio::sync::oneshot::Receiver<()>> {
+    let (quit_tx, quit_rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("zju-connect-tray".into())
+        .spawn(move || match tray::TrayController::new(port, &token) {
+            Ok((tray, tray_quit_rx)) => {
+                // Forward the tray's quit signal to the main loop; `tray` stays
+                // alive (and the icon registered) until then.
+                if tray_quit_rx.blocking_recv().is_ok() {
+                    let _ = quit_tx.send(());
+                }
+                drop(tray);
+            }
+            Err(err) => {
+                log::warn!("tray icon disabled: {err}");
+                // Make the failure user-visible in the logs tab (and note that
+                // quitting then requires Ctrl+C / task manager).
+                bridge.emit_event(proxy::ProxyEvent::Log(format!(
+                    "[tray] 系统托盘不可用：{err}（退出需通过 Ctrl+C 或任务管理器）"
+                )));
+            }
+        })?;
+    Ok(quit_rx)
+}
+
+fn open_browser(port: u16, token: &str) {
+    let url = format!("http://localhost:{port}/?token={token}");
+    // The token is intentionally not logged: it would end up in terminal
+    // history and journald.
+    log::info!("opening browser at http://localhost:{port}");
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("rundll32")

@@ -27,12 +27,13 @@ impl TrayController {
     /// Spawn a background thread that creates the tray icon and runs the
     /// Win32 / Cocoa message pump.  Returns a oneshot receiver that fires
     /// when the user selects "退出".
-    pub fn new(port: u16) -> Result<(Self, oneshot::Receiver<()>), TrayError> {
+    pub fn new(port: u16, token: &str) -> Result<(Self, oneshot::Receiver<()>), TrayError> {
         let (quit_tx, quit_rx) = oneshot::channel();
         let (stop_tx, stop_rx) = mpsc::sync_channel::<()>(1);
 
         // Decode the icon once, then move into the thread.
         let icon = build_icon()?;
+        let token = token.to_string();
 
         let thread_handle = thread::spawn(move || {
             let menu = Menu::new();
@@ -65,7 +66,7 @@ impl TrayController {
                 // ── Menu events ──────────────────────────────
                 while let Ok(event) = MenuEvent::receiver().try_recv() {
                     if event.id == open_id {
-                        open_web_ui(port);
+                        open_web_ui(port, &token);
                     } else if event.id == quit_id {
                         if let Some(tx) = quit_tx.take() {
                             let _ = tx.send(());
@@ -86,7 +87,7 @@ impl TrayController {
                             button: MouseButton::Left,
                             ..
                         } => {
-                            open_web_ui(port);
+                            open_web_ui(port, &token);
                         }
                         _ => {}
                     }

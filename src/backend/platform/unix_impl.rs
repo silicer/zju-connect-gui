@@ -11,10 +11,15 @@ use super::{ElevationError, SingleInstanceError, WaitError};
 /// can later be delivered to the child.
 pub fn init_console_for_signaling() {}
 
-/// On unix we never elevate; the GUI starts with whatever privileges the user has.
-/// Reported as `true` so the manager treats every start as "ready to spawn directly".
+/// True when running as root (euid 0).
+///
+/// TUN mode and ProxyBridge (NFQUEUE interception) both require root on
+/// Linux; zju-connect's non-TUN mode runs fine as a regular user. The manager
+/// rejects TUN/ProxyBridge starts when this is false, and the frontend offers
+/// an elevation flow (which is unsupported on unix, so the start is then
+/// retried with those features disabled).
 pub fn is_process_elevated() -> bool {
-    true
+    unsafe { libc::geteuid() == 0 }
 }
 
 pub fn relaunch_self_elevated(_args: &[String]) -> Result<(), ElevationError> {

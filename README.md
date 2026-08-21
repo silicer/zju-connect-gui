@@ -95,6 +95,11 @@ scripts/                     build_linux_appimage.sh
   (`platform::acquire_single_instance` in `src/main.rs`). Unix uses
   `flock(LOCK_EX|LOCK_NB)` on `app_dir/instance.lock`; Windows uses a
   `Local\` named mutex. A second launch logs and exits cleanly with status 0.
+- The web UI is protected by a per-launch random token: the app opens
+  `http://localhost:{port}/?token=...`, the page sends it as the
+  `X-Auth-Token` header (SSE passes `?token=`), and the server validates the
+  `Host` header against `localhost`/`127.0.0.1` to blunt DNS-rebinding and
+  local-process attacks on the (possibly elevated) API.
 - Closing the browser tab does NOT stop the background process. Quit only via
   the tray menu or Ctrl+C in the terminal.
 
@@ -105,6 +110,9 @@ scripts/                     build_linux_appimage.sh
 - macOS compiles but is not exercised in CI.
 - On GNOME the tray icon requires the AppIndicator/KStatusNotifierItem
   shell extension (KDE Plasma works out of the box).
+- Credentials are stored in plaintext in `gui_settings.json` (0600 on Unix)
+  and passed to `zju-connect` on its command line — visible in the process
+  list (`ps` / Process Explorer). This is an upstream CLI contract.
 
 ## License
 

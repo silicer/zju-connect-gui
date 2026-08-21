@@ -40,6 +40,10 @@ src/
     proxy/                     supervisor + helpers
       manager.rs               ProxyManager, supervise_child task,
                                retry/readiness/eip-open generation logic
+      proxybridge.rs           in-process libproxybridge.so / ProxyBridgeCore.dll
+                               binding (dlopen + C API; macOS stubbed out)
+      windivert.rs             WinDivert kernel driver ensure/install/start
+                               (Windows only, no-op elsewhere)
       logs.rs                  chunked stream reader + prompt detection
       readiness.rs             HTTP-bind dial poll
       captcha.rs               60s deadline, size-stable file polling
@@ -52,10 +56,12 @@ src/
                                acquire_single_instance, SingleInstanceGuard
   web/                         HTTP server + SSE bridge
     server.rs                  axum router, port selection (try-last, then
-                               OS-assigned), SSE endpoint with BroadcastStream
+                               OS-assigned), per-launch token auth middleware
+                               (X-Auth-Token header / ?token= query), SSE
+                               endpoint with BroadcastStream
     handlers.rs                REST handlers: /api/settings, /api/start,
-                               /api/stop, /api/submit-input, /api/submit-captcha,
-                               /api/clear-logs, /api/elevate, /api/status
+                               /api/stop, /api/submit-input, /api/elevate,
+                               /api/status
     bridge.rs                  WebUiBridge: implements UiBridge trait, converts
                                ProxyEvent → SseEvent → broadcast send
     assets.rs                  include_str!-embedded frontend files
@@ -107,14 +113,14 @@ tests/
 | POST | `/api/settings` | Save settings (partial merge) |
 | POST | `/api/start` | Start proxy; returns 412 if elevation needed |
 | POST | `/api/stop` | Stop proxy |
-| POST | `/api/submit-input` | Submit SMS/credential input |
-| POST | `/api/submit-captcha` | Submit captcha coordinates |
-| POST | `/api/clear-logs` | Clear log buffer |
-| POST | `/api/elevate` | Trigger UAC elevation (Windows only) |
+| POST | `/api/submit-input` | Submit SMS/callback input or captcha coordinates (`value` + optional `kind`) |
+| POST | `/api/elevate` | Trigger elevation flow (Windows only; no-op signal on other OSes) |
 | GET | `/api/status` | Snapshot of current proxy state |
 | GET | `/api/events` | SSE stream: log, state, need_input, need_captcha, error |
 | GET | `/` | Serve index.html |
 | GET | `/static/{path}` | Serve embedded static files |
+
+Auth: every `/api/*` route (including SSE) requires the per-launch token — pass it as the `X-Auth-Token` header; only the SSE stream additionally accepts `?token=` (EventSource cannot set headers), so a leaked `?token=` URL cannot drive state-changing requests. The app opens `http://localhost:{port}/?token=...`; the token is regenerated each launch and never persisted. The server also rejects requests whose `Host` header is not `localhost:{port}` / `127.0.0.1:{port}` (case-insensitive, DNS-rebinding protection).
 
 ## Verification gates (run before committing)
 

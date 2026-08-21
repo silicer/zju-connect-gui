@@ -20,3 +20,5 @@ zju-connect.log
 zju-connect.input
 zju-connect.pid
 zju-connect.stop
+*.syso
+/.pi-subagents/
