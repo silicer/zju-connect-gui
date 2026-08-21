@@ -164,6 +164,69 @@ pub struct ProxyBridge {
     b: Bindings,
 }
 
+/// Format a `libloading` error including its OS-error source chain. Without
+/// this, Windows only reports the unhelpful `"LoadLibraryExW failed"` and
+/// hides whether the real cause was `ERROR_MOD_NOT_FOUND` (126),
+/// `ERROR_BAD_EXE_FORMAT` (193), etc.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn format_libloading_error(err: libloading::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = std::error::Error::source(&err);
+    while let Some(err) = source {
+        text.push_str(": ");
+        text.push_str(&err.to_string());
+        source = err.source();
+    }
+    text
+}
+
+/// Load the ProxyBridge core library with platform-appropriate dependency
+/// resolution.
+///
+/// On Windows a plain `LoadLibraryExW(abs_path, 0)` does **not** search the
+/// loaded DLL's own directory for its dependencies. That breaks a portable
+/// layout like `<app>/proxybridge/ProxyBridgeCore.dll` + `WinDivert.dll` on a
+/// clean machine. `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` fixes exactly that while
+/// still resolving system imports from System32.
+#[cfg(target_os = "windows")]
+unsafe fn load_core_library(path: Option<&Path>) -> Result<Library, String> {
+    use libloading::os::windows::{
+        Library as OsLibrary, LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    };
+
+    let dependency_search = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+        | LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+        | LOAD_LIBRARY_SEARCH_SYSTEM32;
+
+    let os_lib = match path {
+        // The DLL-load-dir flag requires a fully qualified path.
+        Some(p) => unsafe { OsLibrary::load_with_flags(p, dependency_search) },
+        None => unsafe { OsLibrary::new(PB_LIB_NAME) },
+    }
+    .map_err(|e| {
+        format!(
+            "failed to load {PB_LIB_NAME}: {}",
+            format_libloading_error(e)
+        )
+    })?;
+    Ok(os_lib.into())
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn load_core_library(path: Option<&Path>) -> Result<Library, String> {
+    let lib = match path {
+        Some(p) => unsafe { Library::new(p) },
+        None => unsafe { Library::new(PB_LIB_NAME) },
+    };
+    lib.map_err(|e| {
+        format!(
+            "failed to load {PB_LIB_NAME}: {}",
+            format_libloading_error(e)
+        )
+    })
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl ProxyBridge {
     /// Load the library and resolve its symbols.
@@ -174,11 +237,7 @@ impl ProxyBridge {
         path: Option<&Path>,
         log_tx: mpsc::UnboundedSender<String>,
     ) -> Result<Self, String> {
-        let lib = match path {
-            Some(p) => unsafe { Library::new(p) },
-            None => unsafe { Library::new(PB_LIB_NAME) },
-        }
-        .map_err(|e| format!("failed to load {PB_LIB_NAME}: {e}"))?;
+        let lib = unsafe { load_core_library(path) }?;
         let b = unsafe { bind_symbols(&lib) }?;
         // Install the log sink *before* registering the callback so no early
         // log lines are dropped.
