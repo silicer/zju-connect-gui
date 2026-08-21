@@ -73,18 +73,18 @@ fn start_returns_binary_missing_when_path_does_not_exist() {
 }
 
 #[test]
-fn submit_input_returns_not_running_when_idle() {
+fn submit_input_returns_not_awaiting_when_idle() {
     let rt = Runtime::new().unwrap();
     let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
-    let err = manager.submit_input("123456").unwrap_err();
-    assert!(matches!(err, SubmitInputError::NotRunning), "got {err:?}");
+    let err = manager.submit_input("123456", None).unwrap_err();
+    assert!(matches!(err, SubmitInputError::NotAwaiting), "got {err:?}");
 }
 
 #[test]
 fn submit_input_rejects_empty_value() {
     let rt = Runtime::new().unwrap();
     let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
-    let err = manager.submit_input("   ").unwrap_err();
+    let err = manager.submit_input("   ", None).unwrap_err();
     assert!(matches!(err, SubmitInputError::Empty), "got {err:?}");
 }
 

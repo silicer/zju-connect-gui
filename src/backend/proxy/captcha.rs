@@ -7,6 +7,9 @@ use tokio::time;
 pub const CAPTCHA_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const CAPTCHA_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub const CAPTCHA_POLL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Refuse captcha files larger than this (a malicious/broken writer must not
+/// cause a huge allocation + base64 expansion broadcast over SSE).
+pub const CAPTCHA_MAX_SIZE: u64 = 10 * 1024 * 1024;
 
 pub fn encode_captcha(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
@@ -26,7 +29,7 @@ pub async fn poll_for_stable_captcha(path: &Path) -> std::io::Result<Option<Vec<
             Err(_) => continue,
         };
         let size = metadata.len();
-        if size == 0 {
+        if size == 0 || size > CAPTCHA_MAX_SIZE {
             continue;
         }
         if size == last_size {
@@ -87,6 +90,23 @@ mod tests {
     async fn poll_for_stable_captcha_times_out_when_file_missing() {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("never");
+        let result = poll_for_stable_captcha(&path).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn poll_for_stable_captcha_ignores_oversized_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("huge.png");
+        let path_clone = path.clone();
+        let writer = tokio::spawn(async move {
+            let mut f = std::fs::File::create(&path_clone).unwrap();
+            f.write_all(&vec![0u8; CAPTCHA_MAX_SIZE as usize + 1])
+                .unwrap();
+            f.sync_all().unwrap();
+        });
+        writer.await.unwrap();
+        // Oversized file is never accepted; the poll simply times out.
         let result = poll_for_stable_captcha(&path).await.unwrap();
         assert!(result.is_none());
     }

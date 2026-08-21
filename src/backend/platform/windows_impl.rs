@@ -6,8 +6,7 @@ use std::time::Duration;
 use tokio::process::Child;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, HANDLE, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Console::{
@@ -17,10 +16,8 @@ use windows::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcess, OpenProcess, OpenProcessToken, WaitForSingleObject,
     PROCESS_SYNCHRONIZE,
 };
-use windows::Win32::UI::Shell::{
-    ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-};
-use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_NORMAL};
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
 
 use super::{ElevationError, SingleInstanceError, WaitError};
 
@@ -31,14 +28,19 @@ use super::{ElevationError, SingleInstanceError, WaitError};
 /// `TerminateProcess`, which leaves TUN/DNS state dangling.
 ///
 /// Safe to call at startup; if a console is already attached (e.g. launched from
-/// `cmd.exe`), `AllocConsole` returns Err and we fall through to hiding whatever
-/// console we have.
+/// `cmd.exe`), `AllocConsole` returns Err and we leave that console alone —
+/// hiding it would hide the user's terminal window. Only a console we created
+/// ourselves is hidden.
 pub fn init_console_for_signaling() {
     unsafe {
-        let _ = AllocConsole();
-        let hwnd = GetConsoleWindow();
-        if hwnd.0 as usize != 0 {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+        // Only hide a console we created ourselves. If we're attached to an
+        // existing console (e.g. launched from cmd.exe), AllocConsole fails and
+        // hiding GetConsoleWindow() would hide the user's terminal window.
+        if AllocConsole().is_ok() {
+            let hwnd = GetConsoleWindow();
+            if hwnd.0 as usize != 0 {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
         }
     }
 }
@@ -81,27 +83,32 @@ pub fn relaunch_self_elevated(args: &[String]) -> Result<(), ElevationError> {
     let params_w = to_wide_str(&parameters);
     let verb_w = to_wide_str("runas");
 
-    let mut info = SHELLEXECUTEINFOW {
-        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI,
-        lpVerb: PCWSTR(verb_w.as_ptr()),
-        lpFile: PCWSTR(exe_w.as_ptr()),
-        lpParameters: PCWSTR(params_w.as_ptr()),
-        lpDirectory: PCWSTR(cwd_w.as_ptr()),
-        nShow: SW_NORMAL.0,
-        ..Default::default()
-    };
-    let result = unsafe { ShellExecuteExW(&mut info) };
-    if result.is_ok() {
-        return Ok(());
-    }
-    let last = unsafe { GetLastError() };
-    if last == ERROR_CANCELLED {
-        Err(ElevationError::UserCancelled)
-    } else {
+    unsafe {
+        let ret = ShellExecuteW(
+            None,                      // hwnd
+            PCWSTR(verb_w.as_ptr()),   // lpOperation = "runas"
+            PCWSTR(exe_w.as_ptr()),    // lpFile
+            PCWSTR(params_w.as_ptr()), // lpParameters
+            PCWSTR(cwd_w.as_ptr()),    // lpDirectory
+            SW_SHOW,                   // nShowCmd
+        );
+        if ret.0 as isize > 32 {
+            return Ok(());
+        }
+
+        let code = ret.0 as isize;
+        let err = match code {
+            0 => "out of memory / resources".to_string(),
+            2 => "file not found".to_string(),
+            3 => "path not found".to_string(),
+            5 => "access denied".to_string(),
+            8 => "out of memory".to_string(),
+            32 => "sharing violation".to_string(),
+            _ => format!("error code {code}"),
+        };
+        log::error!("ShellExecuteW failed: {err}");
         Err(ElevationError::Failed(format!(
-            "ShellExecuteExW failed: error {}",
-            last.0
+            "ShellExecuteW failed: {err}"
         )))
     }
 }

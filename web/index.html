@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>ZJU Connect</title>
+<link rel="stylesheet" href="/static/pico.min.css">
+<style>
+  :root { --pico-font-size: 93%; }
+  body { min-height: 100vh; }
+  .container { max-width: 700px; margin: 0 auto; padding: 1rem; }
+  [role="tablist"] { margin-bottom: 0; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; padding: 1rem 0; }
+  .status-pill {
+    display: inline-block; padding: 0.2rem 0.8rem; border-radius: 1rem;
+    font-size: 0.85rem; font-weight: 600;
+  }
+  .status-stopped { background: var(--pico-muted-color); color: white; }
+  .status-connecting { background: #fbbf24; color: black; }
+  .status-connected { background: #34d399; color: black; }
+  .log-viewer {
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
+    padding: 0.5rem; height: 300px; overflow-y: auto;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.82rem; white-space: pre-wrap; word-break: break-all;
+  }
+  .log-entry { border-bottom: 1px solid var(--pico-muted-border-color); padding: 1px 0; }
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-card {
+    background: var(--pico-card-background-color);
+    border-radius: var(--pico-border-radius);
+    padding: 1.5rem; max-width: 420px; width: 90%;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }
+  .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+  .captcha-img-container { position: relative; display: inline-block; cursor: crosshair; }
+  .captcha-img-container img { max-width: 100%; border-radius: 4px; }
+  .captcha-marker {
+    position: absolute; width: 18px; height: 18px;
+    background: #ef4444; color: white;
+    border-radius: 50%; font-size: 11px; font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    transform: translate(-50%, -50%); pointer-events: none;
+  }
+  .captcha-tools { margin-top: 0.3rem; display: flex; gap: 0.3rem; }
+</style>
+</head>
+<body>
+<div class="container" x-data="app">
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">
+    <h2 style="margin:0">ZJU Connect</h2>
+    <div style="display:flex;align-items:center;gap:0.5rem">
+      <span class="status-pill"
+        :class="{
+          'status-stopped': !status.running,
+          'status-connecting': status.running && !status.ready,
+          'status-connected': status.running && status.ready
+        }"
+        x-text="!status.running ? '未连接' : (status.ready ? '已连接' : '连接中...')">未连接</span>
+      <span x-show="statusMessage" x-text="statusMessage" style="font-size:0.8rem;color:var(--pico-muted-color)"></span>
+    </div>
+  </div>
+
+  <!-- Tab bar -->
+  <div role="tablist">
+    <button role="tab" :aria-selected="tab==='settings'" @click="tab='settings'">设置</button>
+    <button role="tab" :aria-selected="tab==='logs'" @click="tab='logs'">日志</button>
+  </div>
+
+  <!-- Settings tab -->
+  <div class="tab-content" :class="{ active: tab === 'settings' }">
+    <div class="grid" style="margin-top:0.5rem">
+      <label>
+        用户名
+        <input type="text" x-model="settings.username" placeholder="ZJU 学号/工号" autocomplete="username">
+      </label>
+      <label>
+        密码
+        <input type="password" x-model="settings.password" placeholder="ZJU 密码" autocomplete="current-password">
+      </label>
+    </div>
+    <div class="grid">
+      <label>
+        SOCKS5 监听
+        <input type="text" x-model="settings.socksBind" placeholder="127.0.0.1:1080">
+      </label>
+      <label>
+        HTTP 监听
+        <input type="text" x-model="settings.httpBind" placeholder="127.0.0.1:8888">
+      </label>
+    </div>
+    <label>
+      <input type="checkbox" x-model="proxyOnly">
+      仅代理（不启用全局 VPN）
+    </label>
+    <div x-show="!isMacOS && proxyOnly" style="margin-left:1.5rem;margin-bottom:1rem;padding-left:0.5rem;border-left:2px solid var(--pico-muted-border-color)">
+      <label>
+        <input type="checkbox" x-model="settings.proxybridgeEnabled" @change="if ($event.target.checked) ensureDefaultProxybridgeProcesses(); else settings.proxybridgeProcesses = []">
+        启用 ProxyBridge 进程代理
+      </label>
+      <div x-show="settings.proxybridgeEnabled" style="margin-left:1rem">
+        <label style="font-size:0.85rem;color:var(--pico-muted-color)">
+          代理进程列表（每行一个进程名，支持通配符 *）：
+          <textarea x-model="proxybridgeProcessesText" rows="4"
+            placeholder="chrome.exe&#10;firefox.exe&#10;steam*.exe"
+            style="font-family:monospace;font-size:0.8rem"></textarea>
+        </label>
+        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 修改进程列表或路径后，需停止并重新连接才生效
+        </p>
+        <label style="font-size:0.85rem;color:var(--pico-muted-color)">
+          ProxyBridge 路径（留空自动检测）：
+          <input type="text" x-model="settings.proxybridgePath"
+            placeholder="留空自动检测（安装目录 / 捆绑目录）">
+        </label>
+        <p x-show="needsElevation" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
+          ⚠️ 此功能需要管理员/root 权限
+        </p>
+        <p x-show="isWindows" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 缺少 WinDivert 驱动时会自动安装（需要管理员权限）
+        </p>
+      </div>
+    </div>
+    <label>
+      <input type="checkbox" x-model="settings.debugDump">
+      调试转储
+    </label>
+    <details>
+      <summary>EIP 浏览器（可选）</summary>
+      <label>
+        浏览器路径
+        <input type="text" x-model="settings.eipBrowserProgram" placeholder="C:\Program Files\...\chrome.exe">
+      </label>
+      <label>
+        浏览器参数（每行一个）
+        <textarea x-model="eipBrowserArgsText" rows="3" placeholder="--kiosk&#10;--new-window"></textarea>
+      </label>
+    </details>
+
+    <div style="margin-top:1rem;display:flex;gap:0.5rem">
+      <button
+        x-show="!status.running"
+        @click="onStart()"
+        :aria-busy="starting"
+        :disabled="starting"
+        x-text="starting ? '启动中...' : '立即连接'">立即连接</button>
+      <button
+        x-show="status.running"
+        class="secondary"
+        @click="onStop()"
+        :aria-busy="stopping"
+        :disabled="stopping"
+        x-text="stopping ? '停止中...' : '断开连接'">断开连接</button>
+    </div>
+  </div>
+
+  <!-- Logs tab -->
+  <div class="tab-content" :class="{ active: tab === 'logs' }">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:0.3rem">
+      <button class="outline secondary small" @click="clearLogs()">清空</button>
+    </div>
+    <div class="log-viewer" x-ref="logViewer">
+      <template x-for="(line, i) in logs" :key="i">
+        <div class="log-entry" x-text="line"></div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Input Modal -->
+  <div class="modal-overlay" :class="{ open: modal.show === 'input' }">
+    <div class="modal-card">
+      <h3 x-text="modal.title">输入需求</h3>
+      <div class="modal-body">
+        <p x-text="modal.prompt" style="margin-bottom:0.5rem;color:var(--pico-muted-color)"></p>
+        <input
+          :type="modal.inputKind === 'sms' ? 'tel' : 'text'"
+          x-model="modal.inputValue"
+          @keydown.enter="onSubmitInput()"
+          :placeholder="modal.inputKind === 'sms' ? '短信验证码' : ''"
+          x-ref="inputField"
+          autofocus>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" @click="onCancelModal()">取消</button>
+        <button @click="onSubmitInput()" :disabled="!modal.inputValue">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Captcha Modal -->
+  <div class="modal-overlay" :class="{ open: modal.show === 'captcha' }">
+    <div class="modal-card" style="max-width:560px">
+      <h3 x-text="modal.title">图形验证码</h3>
+      <div class="modal-body">
+        <p x-text="modal.prompt" style="margin-bottom:0.5rem;color:var(--pico-muted-color)"></p>
+        <div class="captcha-img-container" @click="onCaptchaClick($event)" x-ref="captchaContainer">
+          <img :src="'data:image/png;base64,' + modal.captchaBase64" x-ref="captchaImg" @load="onCaptchaImgLoad()">
+          <template x-for="(pt, i) in captchaPoints" :key="i">
+            <div class="captcha-marker" :style="'left:' + pt.x + 'px;top:' + pt.y + 'px'" x-text="i + 1"></div>
+          </template>
+        </div>
+        <div class="captcha-tools">
+          <button class="outline secondary small" @click="captchaPoints.pop()" :disabled="!captchaPoints.length">撤销</button>
+          <button class="outline secondary small" @click="captchaPoints = []" :disabled="!captchaPoints.length">清除</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" @click="onCancelModal()">取消</button>
+        <button @click="onSubmitCaptcha()" :disabled="!captchaPoints.length">确认</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Per-launch auth token, embedded in the URL the app opens
+// (http://localhost:<port>/?token=...). All API calls must present it.
+// The URL token is stripped after first load; it is kept in localStorage so a
+// manual refresh / closed-tab reopen of the same page can still reach the API.
+const TOKEN_STORAGE_KEY = 'zju_gui_auth_token';
+let TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+if (TOKEN) {
+  try { localStorage.setItem(TOKEN_STORAGE_KEY, TOKEN); } catch (_) {}
+} else {
+  try { TOKEN = localStorage.getItem(TOKEN_STORAGE_KEY) || ''; } catch (_) { TOKEN = ''; }
+}
+
+async function apiFetch(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (TOKEN) headers['X-Auth-Token'] = TOKEN;
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
+  if (r.status === 403) {
+    try { localStorage.removeItem(TOKEN_STORAGE_KEY); } catch (_) {}
+    TOKEN = '';
+    const e = new Error('页面缺少访问令牌，请通过托盘图标或应用自动打开的链接访问');
+    e.authFailed = true;
+    throw e;
+  }
+  return r;
+}
+
+const appPlatform = navigator.platform || navigator.userAgentData?.platform || '';
+const defaultProxybridgeProcesses = /Win/i.test(appPlatform) ? ['mstsc.exe'] : (/Mac/i.test(appPlatform) ? [] : ['xfreerdp']);
+
+document.addEventListener('alpine:init', () => {
+  Alpine.data('app', () => ({
+    tab: 'settings',
+    status: { running: false, ready: false, state: 'stopped' },
+    statusMessage: '',
+    starting: false,
+    stopping: false,
+    sseErrors: 0,
+    logs: [],
+    _pendingLogs: [],
+    _logFlushTimer: null,
+    isMacOS: /Mac/i.test(appPlatform),
+    isWindows: /Win/i.test(appPlatform),
+    settings: {
+      username: '', password: '',
+      socksBind: '127.0.0.1:1080', httpBind: '127.0.0.1:8888',
+      tunMode: true, debugDump: false,
+      eipBrowserProgram: '', eipBrowserArgs: [],
+      proxybridgeEnabled: false, proxybridgeProcesses: [...defaultProxybridgeProcesses],
+      proxybridgePath: '',
+    },
+    get proxyOnly() {
+      return !this.settings.tunMode;
+    },
+    set proxyOnly(v) {
+      this.settings.tunMode = !v;
+    },
+    get eipBrowserArgsText() {
+      return (this.settings.eipBrowserArgs || []).join('\n');
+    },
+    set eipBrowserArgsText(v) {
+      this.settings.eipBrowserArgs = v.split('\n').map(s => s.trim()).filter(s => s);
+    },
+    get proxybridgeProcessesText() {
+      return (this.settings.proxybridgeProcesses || []).join('\n');
+    },
+    set proxybridgeProcessesText(v) {
+      this.settings.proxybridgeProcesses = v.split('\n').map(s => s.trim()).filter(s => s);
+    },
+    ensureDefaultProxybridgeProcesses() {
+      if (!(this.settings.proxybridgeProcesses || []).length) {
+        this.settings.proxybridgeProcesses = [...defaultProxybridgeProcesses];
+      }
+    },
+    get needsElevation() {
+      return this.settings.tunMode || (this.settings.proxybridgeEnabled && this.settings.proxybridgeProcesses.length > 0);
+    },
+    modal: {
+      show: null,
+      title: '',
+      prompt: '',
+      inputKind: '',
+      inputValue: '',
+      captchaBase64: '',
+    },
+    captchaPoints: [],
+    captchaNaturalW: 0,
+    captchaNaturalH: 0,
+
+    async init() {
+      if (!TOKEN) {
+        this.statusMessage = '页面缺少访问令牌，请通过托盘图标或应用自动打开的链接访问';
+      } else if (history.replaceState) {
+        // Strip the token from the address bar / browser history as soon as
+        // it has been captured: it must not linger in history or in the URL
+        // shown on screen.
+        const url = new URL(window.location.href);
+        url.searchParams.delete('token');
+        history.replaceState(null, '', url.toString());
+      }
+      try {
+        const r = await apiFetch('/api/settings');
+        if (r.ok) {
+          const opts = await r.json();
+          Object.assign(this.settings, opts);
+        }
+      } catch (e) {
+        if (e.authFailed) this.statusMessage = e.message;
+      }
+
+      try {
+        const r = await apiFetch('/api/status');
+        if (r.ok) {
+          const s = await r.json();
+          const active = s.sessionActive ?? s.session_active;
+          this.status.running = active;
+          this.status.ready = s.ready;
+          this.status.state = active ? (s.ready ? 'connected' : 'connecting') : 'stopped';
+        }
+      } catch (e) {
+        if (e.authFailed) this.statusMessage = e.message;
+      }
+
+      this.connectSse();
+      this.$watch('modal.show', (v) => {
+        if (v === 'input') {
+          this.$nextTick(() => { const el = this.$refs.inputField; if (el) el.focus(); });
+        }
+      });
+    },
+
+    connectSse() {
+      const es = new EventSource('/api/events' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : ''));
+      es.addEventListener('log', (e) => this.queueLog(JSON.parse(e.data).line));
+      es.addEventListener('state', (e) => {
+        const d = JSON.parse(e.data);
+        this.status.running = d.running;
+        this.status.ready = d.state === 'connected';
+        this.status.state = d.state;
+        if (d.message) this.statusMessage = d.message;
+        else if (d.awaiting) this.statusMessage = '等待输入: ' + d.awaiting;
+        else if (d.state === 'stopped' && !d.running) this.statusMessage = '';
+        else if (d.state === 'connected') this.statusMessage = '';
+        this.starting = false;
+        this.stopping = false;
+      });
+      es.addEventListener('need_input', (e) => {
+        const d = JSON.parse(e.data);
+        this.modal = {
+          show: 'input', title: d.kind === 'sms' ? '短信验证码' : '输入需求',
+          prompt: d.prompt, inputKind: d.kind, inputValue: '', captchaBase64: '',
+        };
+        this.statusMessage = '';
+      });
+      es.addEventListener('need_captcha', (e) => {
+        const d = JSON.parse(e.data);
+        this.modal = {
+          show: 'captcha', title: '图形验证码',
+          prompt: '请在图片上按顺序点击对应位置，然后提交',
+          inputKind: '', inputValue: '', captchaBase64: d.base64,
+        };
+        this.captchaPoints = []; this.captchaNaturalW = 0; this.captchaNaturalH = 0;
+        this.statusMessage = '';
+      });
+      es.addEventListener('error', (e) => {
+        const d = JSON.parse(e.data);
+        this.statusMessage = d.message;
+        this.starting = false; this.stopping = false;
+      });
+      es.onopen = () => { this.sseErrors = 0; this.refreshStatus(); };
+      es.onerror = () => {
+        this.sseErrors = (this.sseErrors || 0) + 1;
+        if (this.sseErrors >= 5) {
+          this.statusMessage = '与后台连接已断开，请刷新页面';
+          this.starting = false; this.stopping = false;
+        }
+      };
+    },
+
+    async refreshStatus() {
+      try {
+        const r = await apiFetch('/api/status');
+        if (r.ok) {
+          const s = await r.json();
+          const active = s.sessionActive ?? s.session_active;
+          this.status.running = active;
+          this.status.ready = s.ready;
+          this.status.state = active ? (s.ready ? 'connected' : 'connecting') : 'stopped';
+          if ((s.awaiting === 'sms' || s.awaiting === 'callback') &&
+              (!this.modal.show || this.modal.inputKind !== s.awaiting)) {
+            this.modal = {
+              show: 'input',
+              title: s.awaiting === 'sms' ? '短信验证码' : '输入需求',
+              prompt: s.awaiting === 'sms' ? 'Please enter the SMS code' : 'Please enter the callback URL',
+              inputKind: s.awaiting, inputValue: '', captchaBase64: '',
+            };
+            this.statusMessage = '';
+          }
+        }
+      } catch (e) {}
+    },
+
+    queueLog(line) {
+      this._pendingLogs.push(line);
+      if (!this._logFlushTimer) {
+        // Batch SSE log bursts: debug dumps can emit many lines per second.
+        // Flushing a few times per second avoids one Alpine re-render + layout
+        // pass per log line.
+        this._logFlushTimer = setTimeout(() => this.flushLogs(), 100);
+      }
+    },
+
+    flushLogs() {
+      this._logFlushTimer = null;
+      if (!this._pendingLogs.length) return;
+      // Bound the amount of DOM work per flush; if more lines arrived during
+      // this batch, continue draining on a short timer instead of doing it all
+      // in one synchronous Alpine re-render.
+      const batch = this._pendingLogs.splice(0, 500);
+      this.logs.push(...batch);
+      if (this.logs.length > 1000) this.logs.splice(0, this.logs.length - 1000);
+      if (this._pendingLogs.length) {
+        this._logFlushTimer = setTimeout(() => this.flushLogs(), 50);
+      }
+      if (this.tab === 'logs') {
+        this.$nextTick(() => {
+          const el = this.$refs.logViewer;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      }
+    },
+
+    clearLogs() {
+      this._pendingLogs = [];
+      this.logs = [];
+    },
+
+    async onStart() {
+      if (this.starting) return;
+      this.starting = true;
+      this.statusMessage = '正在启动...';
+      try { await apiFetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(this.settings) }); } catch(e) {}
+      try {
+        const r = await apiFetch('/api/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
+        if (r.status === 412) {
+          const reason = this.settings.tunMode ? '全局模式' : 'ProxyBridge 进程代理';
+          this.statusMessage = `${reason}需要管理员权限，正在请求提权...`;
+          const r2 = await apiFetch('/api/elevate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
+          if (!r2.ok) {
+            const msg = await r2.text();
+            this.statusMessage = '提权失败：' + msg;
+          } else {
+            this.statusMessage = '已请求管理员权限，新窗口将自动连接；若未弹出授权窗口，请检查系统权限设置';
+          }
+          this.starting = false;
+        } else if (!r.ok) {
+          const msg = await r.text();
+          this.statusMessage = '启动失败：' + msg;
+          this.starting = false;
+        }
+      } catch (e) {
+        this.statusMessage = '启动失败：' + e.message;
+        this.starting = false;
+      }
+    },
+
+    async onStop() {
+      if (this.stopping) return;
+      this.stopping = true; this.statusMessage = '正在停止...';
+      try {
+        const r = await apiFetch('/api/stop', { method: 'POST' });
+        if (!r.ok) {
+          this.statusMessage = '停止失败：' + (await r.text());
+          this.stopping = false;
+        }
+      }
+      catch (e) { this.statusMessage = '停止失败：' + e.message; this.stopping = false; }
+    },
+
+    async onSubmitInput() {
+      if (!this.modal.inputValue) return;
+      try {
+        const r = await apiFetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ value: this.modal.inputValue, kind: this.modal.inputKind }) });
+        if (!r.ok) {
+          this.statusMessage = '提交失败：' + (await r.text());
+          return;
+        }
+        this.modal.show = null; this.modal.inputValue = '';
+      } catch (e) { this.statusMessage = '提交失败：' + e.message; }
+    },
+
+    onCancelModal() { this.modal.show = null; this.captchaPoints = []; },
+
+    onCaptchaClick(event) {
+      const container = this.$refs.captchaContainer, img = this.$refs.captchaImg;
+      if (!container || !img) return;
+      const rect = container.getBoundingClientRect();
+      const clickX = event.clientX - rect.left, clickY = event.clientY - rect.top;
+      const scaleX = this.captchaNaturalW / img.clientWidth, scaleY = this.captchaNaturalH / img.clientHeight;
+      const naturalX = Math.round(clickX * scaleX), naturalY = Math.round(clickY * scaleY);
+      this.captchaPoints.push({ x: clickX, y: clickY, nx: naturalX, ny: naturalY });
+    },
+
+    onCaptchaImgLoad() {
+      const img = this.$refs.captchaImg;
+      if (img) { this.captchaNaturalW = img.naturalWidth; this.captchaNaturalH = img.naturalHeight; }
+    },
+
+    async onSubmitCaptcha() {
+      if (!this.captchaPoints.length) return;
+      const coords = this.captchaPoints.map(p => [p.nx, p.ny]);
+      try {
+        const r = await apiFetch('/api/submit-input', { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ value: JSON.stringify({ coordinates: coords, width: this.captchaNaturalW, height: this.captchaNaturalH }), kind: 'captcha' }) });
+        if (!r.ok) {
+          this.statusMessage = '提交失败：' + (await r.text());
+          return;
+        }
+        this.modal.show = null; this.captchaPoints = [];
+      } catch (e) { this.statusMessage = '提交失败：' + e.message; }
+    },
+  }));
+});
+</script>
+<script src="/static/alpine.min.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 use crate::backend::launch_options::{
-    normalize_launch_options, LaunchOptions, DEFAULT_AUTH_TYPE, DEFAULT_CLIENT_DATA_FILE,
-    DEFAULT_EIP_AUTO_OPEN, DEFAULT_LOGIN_DOMAIN, DEFAULT_PORT, DEFAULT_PROTOCOL,
-    DEFAULT_SECONDARY_DNS_SERVER, DEFAULT_SERVER,
+    default_proxybridge_processes, normalize_launch_options, LaunchOptions, DEFAULT_AUTH_TYPE,
+    DEFAULT_CLIENT_DATA_FILE, DEFAULT_EIP_AUTO_OPEN, DEFAULT_LOGIN_DOMAIN, DEFAULT_PORT,
+    DEFAULT_PROTOCOL, DEFAULT_SECONDARY_DNS_SERVER, DEFAULT_SERVER,
 };
 use std::fs;
 use std::io;
@@ -40,6 +40,7 @@ pub fn default_launch_options() -> LaunchOptions {
     defaults.client_data_file = DEFAULT_CLIENT_DATA_FILE.into();
     defaults.eip_auto_open = DEFAULT_EIP_AUTO_OPEN;
     defaults.tun_mode = true;
+    defaults.proxybridge_processes = default_proxybridge_processes();
     defaults
 }
 
@@ -66,6 +67,10 @@ impl UserSettingsStore {
             .as_object()
             .map(|map| map.contains_key("eipAutoOpen"))
             .unwrap_or(false);
+        let has_proxybridge_processes = raw
+            .as_object()
+            .map(|map| map.contains_key("proxybridgeProcesses"))
+            .unwrap_or(false);
 
         let mut options: LaunchOptions =
             serde_json::from_value(raw).map_err(SettingsError::Parse)?;
@@ -73,6 +78,9 @@ impl UserSettingsStore {
         options = apply_fixed_defaults(normalize_launch_options(options));
         if !has_eip_auto_open {
             options.eip_auto_open = DEFAULT_EIP_AUTO_OPEN;
+        }
+        if !has_proxybridge_processes {
+            options.proxybridge_processes = default_proxybridge_processes();
         }
         Ok(options)
     }
@@ -133,6 +141,42 @@ mod tests {
         assert_eq!(defaults.client_data_file, DEFAULT_CLIENT_DATA_FILE);
         assert!(defaults.eip_auto_open);
         assert!(defaults.tun_mode);
+        assert_eq!(
+            defaults.proxybridge_processes,
+            default_proxybridge_processes()
+        );
+    }
+
+    #[test]
+    fn user_settings_store_load_missing_proxybridge_processes_seeds_default() {
+        let tmp = tempdir().unwrap();
+        let store = UserSettingsStore::new(tmp.path());
+        let payload = json!({
+            "username": "alice",
+            "password": "p",
+        });
+        fs::write(tmp.path().join(SETTINGS_FILE_NAME), payload.to_string()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.proxybridge_processes,
+            default_proxybridge_processes()
+        );
+    }
+
+    #[test]
+    fn user_settings_store_load_preserves_explicitly_empty_proxybridge_processes() {
+        let tmp = tempdir().unwrap();
+        let store = UserSettingsStore::new(tmp.path());
+        let payload = json!({
+            "username": "alice",
+            "password": "p",
+            "proxybridgeProcesses": [],
+        });
+        fs::write(tmp.path().join(SETTINGS_FILE_NAME), payload.to_string()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert!(loaded.proxybridge_processes.is_empty());
     }
 
     #[test]

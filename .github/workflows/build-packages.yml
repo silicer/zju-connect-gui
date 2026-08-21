@@ -18,57 +18,207 @@ env:
   APP_NAME: zju-connect-gui
 
 jobs:
+  # ── Linux (x86_64 native + arm64 native) ────────────────────────────
   build-linux:
-    name: Linux AppImage (x86_64)
-    runs-on: ubuntu-24.04
+    name: Linux (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-      - name: Install slint + appimage tooling deps
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ── ProxyBridge: bundle the core library (no CLI needed; the app
+      #    loads `libproxybridge.so` in-process). x86_64 from release,
+      #    arm64 compiled from source. ──
+      - name: Install ProxyBridge build deps (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libfontconfig-dev libxcb1-dev libxcursor-dev \
-            libxrandr-dev libxi-dev pkg-config curl
+          sudo apt-get update -y
+          sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Download ProxyBridge (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          mkdir -p target/proxybridge-dist
+          curl -fsSL -o /tmp/pb-linux.tar.gz \
+            https://github.com/InterceptSuite/ProxyBridge/releases/download/v3.2.0/ProxyBridge-Linux-v3.2.0.tar.gz
+          tar -xzf /tmp/pb-linux.tar.gz -C target/proxybridge-dist
+          # Keep only the shared library; discard CLI, GUI and setup script
+          rm -f target/proxybridge-dist/ProxyBridge target/proxybridge-dist/ProxyBridgeGUI target/proxybridge-dist/setup.sh
+          ls -la target/proxybridge-dist/
 
-      - name: Build AppImage
-        run: bash scripts/build_linux_appimage.sh
-
-      - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-linux-x86_64
-          path: ${{ env.APP_NAME }}-x86_64.AppImage
-          if-no-files-found: error
-
-  build-windows:
-    name: Windows MSVC (x86_64)
-    runs-on: windows-2022
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install rust toolchain (msvc)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Compile ProxyBridge from source (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          PB_TAG=v3.2.0
+          PB_COMMIT=7dd955f8e726cd113146984858ba11bf7202bff9
+          git clone --depth 1 --branch $PB_TAG https://github.com/InterceptSuite/ProxyBridge.git /tmp/pb-src
+          cd /tmp/pb-src/Linux
+          bash build.sh
+          mkdir -p $GITHUB_WORKSPACE/target/proxybridge-dist
+          cp output/libproxybridge.so $GITHUB_WORKSPACE/target/proxybridge-dist/
+          ls -la $GITHUB_WORKSPACE/target/proxybridge-dist/
 
       - name: cargo build --release
-        run: cargo build --release --target x86_64-pc-windows-msvc
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Upload exe artifact
-        uses: actions/upload-artifact@v4
+      - name: Package tarball
+        run: |
+          ARCH=${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
+
+          # Bundle the ProxyBridge shared library when available
+          if [ -f target/proxybridge-dist/libproxybridge.so ]; then
+            mkdir -p dist/proxybridge
+            cp target/proxybridge-dist/libproxybridge.so dist/proxybridge/
+            echo "ProxyBridge bundled for Linux ${ARCH}"
+          else
+            echo "ProxyBridge not bundled for Linux ${ARCH}"
+          fi
+
+          tar -czf ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}-windows-x86_64
-          path: target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe
+          name: ${{ env.APP_NAME }}-linux-${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
+          path: ${{ env.APP_NAME }}-linux-*.tar.gz
+          if-no-files-found: error
+
+  # ── Windows (x86_64 + arm64) ───────────────────────────────────────
+  build-windows:
+    name: Windows (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ── ProxyBridge: bundle core lib + WinDivert driver (x86_64 only) ──
+      # The app loads ProxyBridgeCore.dll from the bundled proxybridge/ dir
+      # and auto-installs the signed WinDivert64.sys driver as a kernel
+      # service when missing, so users never run an installer by hand.
+      # All three files sit at the top level of the NSIS setup archive.
+      # ARM64 is not bundled: no ARM64 WinDivert driver exists and the x64
+      # core DLL cannot load in an arm64 process.
+      - name: Install 7-Zip (x86_64 only)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: choco install 7zip -y --no-progress
+
+      - name: Download ProxyBridge (Windows x86_64)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\proxybridge-dist
+          $url = "https://github.com/InterceptSuite/ProxyBridge/releases/download/v4.0.0/ProxyBridge-Setup-4.0.0.exe"
+          $tempExe = "$env:TEMP\pb-setup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $tempExe
+          7z x $tempExe "-otarget\proxybridge-dist" -y | Out-Null
+          # Keep only core library + WinDivert driver/dll; drop GUI/CLI/Skia
+          Get-ChildItem target\proxybridge-dist | Where-Object { $_.Name -notin @('ProxyBridgeCore.dll','WinDivert.dll','WinDivert64.sys') } | Remove-Item -Recurse -Force
+          Get-ChildItem target\proxybridge-dist
+
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $ARCH = if ('${{ matrix.target }}' -like '*aarch64*') { 'arm64' } else { 'x86_64' }
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe dist\
+
+          # Bundle ProxyBridge when available (x86_64 only)
+          if (Test-Path target\proxybridge-dist\ProxyBridgeCore.dll) {
+            New-Item -ItemType Directory -Force -Path dist\proxybridge
+            Copy-Item target\proxybridge-dist\* dist\proxybridge\
+            Write-Host "ProxyBridge bundled for Windows ${ARCH}"
+          } else {
+            Write-Host "ProxyBridge not bundled for Windows ${ARCH}"
+          }
+
+          # Create zip
+          Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-${ARCH}.zip
+          Get-ChildItem ${{ env.APP_NAME }}-windows-${ARCH}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}-windows-${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}
+          path: ${{ env.APP_NAME }}-windows-*.zip
+          if-no-files-found: error
+
+  # ── macOS (arm64 only) ──────────────────────────────────────────────
+  build-macos:
+    name: macOS (arm64)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # macOS: ProxyBridge integration is not supported (upstream ships no
+      # reusable library/CLI for macOS) and is compiled out of the app.
+
+      - name: cargo build --release
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Package tarball
+        run: |
+          mkdir dist
+          cp target/aarch64-apple-darwin/release/${{ env.APP_NAME }} dist/
+          tar -czf ${{ env.APP_NAME }}-macos-arm64.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-macos-arm64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}-macos-arm64
+          path: ${{ env.APP_NAME }}-macos-*.tar.gz
           if-no-files-found: error

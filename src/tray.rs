@@ -1,31 +1,21 @@
 //! System tray icon, split by platform.
 //!
-//! Linux uses `ksni` so we don't pull GTK3 into the build (StatusNotifierItem
-//! over zbus, pure Rust, works on KDE natively and on GNOME with the
-//! AppIndicator extension). Windows and macOS use `tray-icon`. Both impls
-//! expose a `TrayController` that owns its OS resources for the program's
-//! lifetime; `app.rs` wraps construction in `Option<TrayController>` so a
-//! failure on a desktop without StatusNotifierItem support is non-fatal.
+//! Linux uses `ksni` (StatusNotifierItem over D-Bus, pure Rust).
+//! Windows and macOS use `tray-icon`.
 //!
-//! Behaviour contract shared by both backends:
-//!   * Left single-click and left double-click on the tray icon both restore
-//!     the main window (always show — never hide via the icon itself).
-//!   * Right-click opens the context menu, which has three entries:
-//!     "显示主窗口" / "隐藏到托盘" / "退出".
+//! Behaviour:
+//!   * Left-click opens the web UI in the system browser.
+//!   * Right-click opens a context menu: "打开网页" / "退出".
 //!
-//! Every UI-touching action is forwarded back through
-//! `slint::invoke_from_event_loop` because both impls deliver events from
-//! threads outside the Slint event loop.
-
-use slint::{ComponentHandle, Weak};
-
-use crate::AppWindow;
+//! A `tokio::sync::oneshot` sender is fired when the user selects "退出",
+//! signalling the main loop to begin graceful shutdown.
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrayError {
     #[error("failed to decode tray icon: {0}")]
     Icon(String),
     #[error("failed to build tray icon: {0}")]
+    #[allow(dead_code)]
     Build(String),
 }
 
@@ -41,29 +31,21 @@ mod desktop_impl;
 #[cfg(not(target_os = "linux"))]
 pub use desktop_impl::TrayController;
 
-fn dispatch_show(weak: Weak<AppWindow>) {
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(w) = weak.upgrade() {
-            w.window().set_minimized(false);
-            let _ = w.show();
-        }
-    });
-}
-
-fn dispatch_hide(weak: Weak<AppWindow>) {
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(w) = weak.upgrade() {
-            let _ = w.hide();
-        }
-    });
-}
-
-fn dispatch_quit(weak: Weak<AppWindow>) {
-    // Route through the AppWindow `request-quit` callback so app.rs can do
-    // graceful proxy shutdown before tearing down the event loop.
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(w) = weak.upgrade() {
-            w.invoke_request_quit();
-        }
-    });
+fn open_web_ui(port: u16, token: &str) {
+    let url = format!("http://localhost:{port}/?token={token}");
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("rundll32")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&url)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    }
 }
