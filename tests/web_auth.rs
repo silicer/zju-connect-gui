@@ -130,6 +130,43 @@ async fn submit_input_is_rejected_when_nothing_is_awaiting() {
     assert!(text.contains("no input is currently requested"), "{text}");
 }
 
+#[tokio::test]
+async fn browsers_and_open_eip_endpoints_behave() {
+    let (_tmp, server) = start_server().await;
+    let addr = format!("127.0.0.1:{}", server.port);
+    let host = format!("localhost:{}", server.port);
+    let token = &server.token;
+
+    // /api/browsers requires the token like every other API route...
+    let (code, _) = raw_request(
+        &addr,
+        &format!("GET /api/browsers HTTP/1.1\r\nHost: {host}"),
+    )
+    .await;
+    assert_eq!(code, 403);
+
+    // ...and returns a JSON list when authorized.
+    let (code, text) = raw_request(
+        &addr,
+        &format!("GET /api/browsers HTTP/1.1\r\nHost: {host}\r\nX-Auth-Token: {token}"),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let parsed: serde_json::Value =
+        serde_json::from_str(text.split("\r\n\r\n").nth(1).unwrap_or(""))
+            .expect("browsers JSON body");
+    assert!(parsed["browsers"].is_array(), "{parsed}");
+
+    // Manual EIP open without a connected session is rejected with 409.
+    let (code, text) = raw_request(
+        &addr,
+        &format!("POST /api/open-eip HTTP/1.1\r\nHost: {host}\r\nX-Auth-Token: {token}\r\nContent-Length: 0\r\n\r\n"),
+    )
+    .await;
+    assert_eq!(code, 409);
+    assert!(text.contains("尚未连接"), "{text}");
+}
+
 /// Regression cases for the auth middleware, mirroring the attack variants
 /// probed in review: everything must fail closed.
 #[tokio::test]

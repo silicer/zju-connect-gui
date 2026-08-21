@@ -105,8 +105,10 @@ scripts/                     build_linux_appimage.sh
 
 ## Known limitations
 
-- The "browse..." button for the EIP browser program is a stub (paste the
-  path manually for now).
+- The EIP browser file-picker uses each platform's stock dialog helper
+  (PowerShell on Windows, zenity/kdialog/yad on Linux, osascript on macOS);
+  on a desktop that ships none of them, pick a detected browser from the
+  list instead.
 - macOS compiles but is not exercised in CI.
 - On GNOME the tray icon requires the AppIndicator/KStatusNotifierItem
   shell extension (KDE Plasma works out of the box).

@@ -103,12 +103,14 @@
       <input type="checkbox" x-model="proxyOnly">
       仅代理（不启用全局 VPN）
     </label>
-    <div x-show="!isMacOS && proxyOnly" style="margin-left:1.5rem;margin-bottom:1rem;padding-left:0.5rem;border-left:2px solid var(--pico-muted-border-color)">
-      <label>
-        <input type="checkbox" x-model="settings.proxybridgeEnabled" @change="if ($event.target.checked) ensureDefaultProxybridgeProcesses(); else settings.proxybridgeProcesses = []">
-        启用 ProxyBridge 进程代理
+    <!-- ProxyBridge 开关始终显示（macOS 不支持故隐藏），但仅在「仅代理」模式下可改动 -->
+    <div x-show="!isMacOS" style="margin-left:1.5rem;margin-bottom:1rem;padding-left:0.5rem;border-left:2px solid var(--pico-muted-border-color)">
+      <label style="margin-bottom:0">
+        <input type="checkbox" x-model="settings.proxybridgeEnabled" :disabled="!proxyOnly"
+          @change="if ($event.target.checked) ensureDefaultProxybridgeProcesses(); else settings.proxybridgeProcesses = []">
+        启用 ProxyBridge 进程代理<span x-show="!proxyOnly" style="font-size:0.8rem;color:var(--pico-muted-color)">（开启「仅代理」后可设置）</span>
       </label>
-      <div x-show="settings.proxybridgeEnabled" style="margin-left:1rem">
+      <div x-show="proxyOnly && settings.proxybridgeEnabled" style="margin-left:1rem;margin-top:0.5rem">
         <label style="font-size:0.85rem;color:var(--pico-muted-color)">
           代理进程列表（每行一个进程名，支持通配符 *）：
           <textarea x-model="proxybridgeProcessesText" rows="4"
@@ -135,17 +137,41 @@
       <input type="checkbox" x-model="settings.debugDump">
       调试转储
     </label>
-    <details>
-      <summary>EIP 浏览器（可选）</summary>
-      <label>
-        浏览器路径
-        <input type="text" x-model="settings.eipBrowserProgram" placeholder="C:\Program Files\...\chrome.exe">
+
+    <!-- EIP 打开设置 -->
+    <div style="margin-top:0.8rem;padding-top:0.6rem;border-top:1px solid var(--pico-muted-border-color)">
+      <label style="margin-bottom:0.3rem">
+        <input type="checkbox" x-model="settings.eipAutoOpen">
+        连接成功后自动打开 EIP（每次手动连接仅首次）
       </label>
-      <label>
-        浏览器参数（每行一个）
-        <textarea x-model="eipBrowserArgsText" rows="3" placeholder="--kiosk&#10;--new-window"></textarea>
+      <label style="font-size:0.85rem;color:var(--pico-muted-color)">
+        EIP 浏览器（留空使用系统默认；仅代理模式下会附带代理打开）
+        <div style="display:flex;gap:0.4rem">
+          <select x-model="eipBrowserChoice" style="flex:1;min-width:0;font-size:0.85rem">
+            <option value="">系统默认浏览器</option>
+            <template x-for="b in eipBrowserChoices" :key="b.value">
+              <option :value="b.value" x-text="b.label"></option>
+            </template>
+          </select>
+          <button type="button" class="outline secondary" style="margin:0;width:auto"
+            @click="refreshBrowsers()" :disabled="loadingBrowsers"
+            x-text="loadingBrowsers ? '检测中' : '检测'">检测</button>
+          <button type="button" class="outline secondary" style="margin:0;width:auto"
+            @click="browseEipBrowser()" :disabled="browsing"
+            x-text="browsing ? '等待选择' : '浏览…'">浏览…</button>
+        </div>
       </label>
-    </details>
+      <details>
+        <summary>高级：浏览器启动参数</summary>
+        <label>
+          浏览器参数（每行一个，追加在 EIP 地址之前）
+          <textarea x-model="eipBrowserArgsText" rows="3" placeholder="--kiosk&#10;--new-window"></textarea>
+        </label>
+      </details>
+      <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-bottom:0">
+        💡 仅代理模式下按浏览器类型自动附带 SOCKS 代理：Chrome 系用启动参数，Firefox 系用临时配置文件
+      </p>
+    </div>
 
     <div style="margin-top:1rem;display:flex;gap:0.5rem">
       <button
@@ -161,6 +187,15 @@
         :aria-busy="stopping"
         :disabled="stopping"
         x-text="stopping ? '停止中...' : '断开连接'">断开连接</button>
+      <!-- 仅代理模式：手动以附带代理的方式打开 EIP -->
+      <button
+        x-show="proxyOnly"
+        class="outline secondary"
+        @click="onOpenEip()"
+        :aria-busy="openingEip"
+        :disabled="!status.ready || openingEip"
+        title="使用当前会话的 SOCKS 代理打开 EIP"
+        x-text="openingEip ? '正在打开...' : '打开 EIP'">打开 EIP</button>
     </div>
   </div>
 
@@ -269,15 +304,38 @@ document.addEventListener('alpine:init', () => {
       username: '', password: '',
       socksBind: '127.0.0.1:1080', httpBind: '127.0.0.1:8888',
       tunMode: true, debugDump: false,
+      eipAutoOpen: true,
       eipBrowserProgram: '', eipBrowserArgs: [],
       proxybridgeEnabled: false, proxybridgeProcesses: [...defaultProxybridgeProcesses],
       proxybridgePath: '',
     },
+    detectedBrowsers: [],
+    loadingBrowsers: false,
+    browsing: false,
+    openingEip: false,
     get proxyOnly() {
       return !this.settings.tunMode;
     },
     set proxyOnly(v) {
       this.settings.tunMode = !v;
+    },
+    get eipBrowserChoices() {
+      const list = this.detectedBrowsers.map((b) => ({
+        value: b.path,
+        label: `${b.name}（${b.kind === 'firefox' ? 'Firefox 系' : 'Chrome 系'}）— ${b.path}`,
+      }));
+      // Keep a manually configured path visible even when not detected.
+      const cur = this.settings.eipBrowserProgram;
+      if (cur && !list.some((b) => b.value === cur)) {
+        list.unshift({ value: cur, label: '已配置 — ' + cur });
+      }
+      return list;
+    },
+    get eipBrowserChoice() {
+      return this.settings.eipBrowserProgram || '';
+    },
+    set eipBrowserChoice(v) {
+      this.settings.eipBrowserProgram = v;
     },
     get eipBrowserArgsText() {
       return (this.settings.eipBrowserArgs || []).join('\n');
@@ -346,6 +404,7 @@ document.addEventListener('alpine:init', () => {
       }
 
       this.connectSse();
+      this.refreshBrowsers();
       this.$watch('modal.show', (v) => {
         if (v === 'input') {
           this.$nextTick(() => { const el = this.$refs.inputField; if (el) el.focus(); });
@@ -499,6 +558,57 @@ document.addEventListener('alpine:init', () => {
         }
       }
       catch (e) { this.statusMessage = '停止失败：' + e.message; this.stopping = false; }
+    },
+
+    async refreshBrowsers() {
+      if (this.loadingBrowsers) return;
+      this.loadingBrowsers = true;
+      try {
+        const r = await apiFetch('/api/browsers');
+        if (r.ok) {
+          const d = await r.json();
+          this.detectedBrowsers = d.browsers || [];
+        }
+      } catch (e) {} finally { this.loadingBrowsers = false; }
+    },
+
+    async browseEipBrowser() {
+      if (this.browsing) return;
+      this.browsing = true;
+      try {
+        const r = await apiFetch('/api/select-browser-file', { method: 'POST' });
+        if (r.status === 409) {
+          this.statusMessage = await r.text();
+          return;
+        }
+        if (!r.ok) {
+          this.statusMessage = '打开文件对话框失败：' + (await r.text());
+          return;
+        }
+        const d = await r.json();
+        if (d.path) this.settings.eipBrowserProgram = d.path;
+      } catch (e) {
+        this.statusMessage = '打开文件对话框失败：' + e.message;
+      } finally {
+        this.browsing = false;
+      }
+    },
+
+    async onOpenEip() {
+      if (this.openingEip) return;
+      this.openingEip = true;
+      try {
+        const r = await apiFetch('/api/open-eip', { method: 'POST' });
+        if (!r.ok) {
+          this.statusMessage = await r.text();
+        } else {
+          this.statusMessage = '已请求打开 EIP';
+        }
+      } catch (e) {
+        this.statusMessage = '打开 EIP 失败：' + e.message;
+      } finally {
+        this.openingEip = false;
+      }
     },
 
     async onSubmitInput() {

@@ -36,7 +36,14 @@ src/
     pending_connect_store.rs   gui_pending_connect.json with 5-min TTL
     relaunch_args.rs           --resume-pending-connect --wait-parent-pid=N
     paths.rs                   resolve_app_dir() = parent of current_exe
-    external_links.rs          open_eip + EIP_URL
+    external_links.rs          open_eip (mode-aware: opens a new window by
+                               default; proxy-only mode attaches the SOCKS
+                               proxy — Chrome-family flags vs Firefox temp
+                               profile) + EIP_URL
+    browser_detect.rs          installed-browser detection (Windows registry
+                               StartMenuInternet + known paths, unix PATH
+                               scan) + native file-picker dialog (PowerShell
+                               / zenity / kdialog / yad / osascript)
     proxy/                     supervisor + helpers
       manager.rs               ProxyManager, supervise_child task,
                                retry/readiness/eip-open generation logic
@@ -61,7 +68,8 @@ src/
                                endpoint with BroadcastStream
     handlers.rs                REST handlers: /api/settings, /api/start,
                                /api/stop, /api/submit-input, /api/elevate,
-                               /api/status
+                               /api/status, /api/browsers,
+                               /api/select-browser-file, /api/open-eip
     bridge.rs                  WebUiBridge: implements UiBridge trait, converts
                                ProxyEvent → SseEvent → broadcast send
     assets.rs                  include_str!-embedded frontend files
@@ -116,6 +124,9 @@ tests/
 | POST | `/api/submit-input` | Submit SMS/callback input or captcha coordinates (`value` + optional `kind`) |
 | POST | `/api/elevate` | Trigger elevation flow (Windows only; no-op signal on other OSes) |
 | GET | `/api/status` | Snapshot of current proxy state |
+| GET | `/api/browsers` | List locally installed browsers (name/path/chrome-firefox kind) |
+| POST | `/api/select-browser-file` | Open a native file-picker dialog; returns `{path}` or `{path: null}` on cancel; 409 while a dialog is already open |
+| POST | `/api/open-eip` | Open EIP now using the live session's options; 409 when not connected |
 | GET | `/api/events` | SSE stream: log, state, need_input, need_captcha, error |
 | GET | `/` | Serve index.html |
 | GET | `/static/{path}` | Serve embedded static files |
@@ -132,7 +143,6 @@ cargo test --all-targets
 
 ## What's deferred (intentionally)
 
-- Native file picker for the EIP browser path (manual paste only)
 - macOS validation (compiles, not exercised on CI)
 
 ## Known build pitfalls

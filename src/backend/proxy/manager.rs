@@ -132,7 +132,7 @@ fn default_eip_auto_open_delay() -> Duration {
 }
 
 fn default_eip_opener(options: &LaunchOptions) -> Result<(), OpenEipError> {
-    open_eip(&options.eip_browser_program, &options.eip_browser_args)
+    open_eip(options)
 }
 
 #[derive(Debug, Error)]
@@ -641,6 +641,37 @@ impl ProxyManager {
             child_pid: s.child_pid,
         }
     }
+
+    /// Open the EIP page on demand (the "打开 EIP" button in proxy-only
+    /// mode). Uses the exact options of the live session, so in proxy-only
+    /// mode the browser is pointed at the SOCKS listener this session owns.
+    pub fn open_eip_manual(&self) -> Result<(), OpenEipManualError> {
+        let options = {
+            let state = self.inner.state.lock().expect("state mutex poisoned");
+            if !state.session_active || !state.ready {
+                return Err(OpenEipManualError::NotConnected);
+            }
+            state.eip_options.clone()
+        };
+        self.inner.emit_log("[eip] manual EIP open requested");
+        let result = (self.inner.config.eip_opener)(&options);
+        match &result {
+            Ok(()) => self.inner.emit_log("[eip] EIP page opened"),
+            Err(err) => self
+                .inner
+                .emit_log(format!("[eip] failed to open EIP URL: {err}")),
+        }
+        result.map_err(OpenEipManualError::Open)
+    }
+}
+
+/// Errors surfaced by [`ProxyManager::open_eip_manual`].
+#[derive(Debug, Error)]
+pub enum OpenEipManualError {
+    #[error("尚未连接，无法打开 EIP")]
+    NotConnected,
+    #[error("{0}")]
+    Open(#[from] OpenEipError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1534,6 +1565,71 @@ mod tests {
         // Kind matches, but there is no child → NotRunning (kind check passed).
         let err = manager.submit_input("1234", Some("sms")).unwrap_err();
         assert!(matches!(err, SubmitInputError::NotRunning), "got {err:?}");
+    }
+
+    #[test]
+    fn open_eip_manual_requires_connected_session() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        // Idle: not connected.
+        assert!(matches!(
+            manager.open_eip_manual().unwrap_err(),
+            OpenEipManualError::NotConnected
+        ));
+        // Running but not ready yet: still rejected.
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.ready = false;
+        }
+        assert!(matches!(
+            manager.open_eip_manual().unwrap_err(),
+            OpenEipManualError::NotConnected
+        ));
+    }
+
+    #[test]
+    fn open_eip_manual_uses_live_session_options_and_reports_errors() {
+        use std::sync::Mutex as StdMutex;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let seen: Arc<StdMutex<Vec<LaunchOptions>>> = Arc::new(StdMutex::new(Vec::new()));
+        let seen_for_opener = seen.clone();
+        let cfg = ProxyManagerConfig {
+            eip_opener: Arc::new(move |options: &LaunchOptions| {
+                seen_for_opener.lock().unwrap().push(options.clone());
+                // Second call simulates a launcher failure.
+                if seen_for_opener.lock().unwrap().len() > 1 {
+                    Err(OpenEipError::NoBrowserFound)
+                } else {
+                    Ok(())
+                }
+            }),
+            ..ProxyManagerConfig::default()
+        };
+        let manager = ProxyManager::with_config(PathBuf::from("/tmp"), rt.handle().clone(), cfg);
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.ready = true;
+            state.eip_options = LaunchOptions {
+                tun_mode: false,
+                socks_bind: "127.0.0.1:9999".into(),
+                ..LaunchOptions::default()
+            };
+        }
+
+        manager.open_eip_manual().expect("first open succeeds");
+        let opened = seen.lock().unwrap();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].socks_bind, "127.0.0.1:9999");
+        drop(opened);
+
+        // Opener failures surface to the caller (and into the log stream).
+        match manager.open_eip_manual().unwrap_err() {
+            OpenEipManualError::Open(OpenEipError::NoBrowserFound) => {}
+            other => panic!("expected opener error, got {other:?}"),
+        }
     }
 
     #[derive(Clone, Default)]

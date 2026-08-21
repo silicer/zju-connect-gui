@@ -8,6 +8,6 @@ pub mod windivert;
 mod manager;
 
 pub use manager::{
-    EipOpener, InputKind, ProxyEvent, ProxyManager, ProxyManagerConfig, ProxyState, StartError,
-    StateSnapshot, StopError, SubmitInputError, UiBridge,
+    EipOpener, InputKind, OpenEipManualError, ProxyEvent, ProxyManager, ProxyManagerConfig,
+    ProxyState, StartError, StateSnapshot, StopError, SubmitInputError, UiBridge,
 };

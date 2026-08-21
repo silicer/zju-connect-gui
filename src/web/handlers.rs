@@ -9,6 +9,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::backend::browser_detect::{self, DetectedBrowser};
 use crate::backend::launch_options::{normalize_launch_options, LaunchOptions};
 use crate::backend::proxy::ProxyManager;
 use crate::backend::settings_store::UserSettingsStore;
@@ -26,6 +27,9 @@ pub struct AppState {
     /// Elevation requests from the web UI, consumed by the main event loop.
     /// Capacity-1 channel: requests are single-flight.
     pub elevate_tx: mpsc::Sender<Vec<String>>,
+    /// Serializes the native file-picker dialog: only one dialog may be open
+    /// at a time (a second concurrent request is rejected with 409).
+    pub dialog_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 // ── Settings ──────────────────────────────────────────────────────────
@@ -187,4 +191,58 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
         awaiting: snap.awaiting,
     })
     .into_response()
+}
+
+// ── Browser detection / picker / EIP ─────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserListResponse {
+    pub browsers: Vec<DetectedBrowser>,
+}
+
+/// List locally installed browsers for the settings dropdown.
+pub async fn list_browsers() -> impl IntoResponse {
+    // Registry / PATH scans do filesystem I/O; keep them off the workers.
+    let browsers = tokio::task::spawn_blocking(browser_detect::detect_installed_browsers)
+        .await
+        .unwrap_or_default();
+    Json(BrowserListResponse { browsers }).into_response()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectBrowserResponse {
+    /// `null` when the user cancelled the dialog.
+    pub path: Option<String>,
+}
+
+/// Open a native file-picker dialog and return the chosen executable path.
+///
+/// The dialog must be opened by this process (browsers hide real paths from
+/// web pages), and only one can be open at a time.
+pub async fn select_browser_file(State(state): State<AppState>) -> impl IntoResponse {
+    let Ok(_guard) = state.dialog_lock.try_lock() else {
+        return (
+            StatusCode::CONFLICT,
+            "已有文件选择对话框打开，请先处理".to_string(),
+        )
+            .into_response();
+    };
+    let path = tokio::task::spawn_blocking(browser_detect::pick_browser_file_dialog)
+        .await
+        .unwrap_or_else(|err| Err(format!("文件对话框任务失败: {err}")));
+    match path {
+        Ok(path) => Json(SelectBrowserResponse { path }).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
+    }
+}
+
+/// Open the EIP page on demand using the live session's options (in
+/// proxy-only mode the browser is launched with the session's SOCKS proxy).
+pub async fn open_eip_now(State(state): State<AppState>) -> impl IntoResponse {
+    match state.manager.open_eip_manual() {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(err) => (StatusCode::CONFLICT, err.to_string()).into_response(),
+    }
 }

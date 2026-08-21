@@ -59,6 +59,7 @@ pub async fn run(
         port,
         auth_token: token.clone(),
         elevate_tx,
+        dialog_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let router = build_router(state.clone());
@@ -142,6 +143,12 @@ fn build_router(state: AppState) -> Router {
         .route("/api/submit-input", post(handlers::submit_input))
         .route("/api/status", get(handlers::get_status))
         .route("/api/elevate", post(handlers::elevate))
+        .route("/api/browsers", get(handlers::list_browsers))
+        .route(
+            "/api/select-browser-file",
+            post(handlers::select_browser_file),
+        )
+        .route("/api/open-eip", post(handlers::open_eip_now))
         .route("/api/events", get(move || sse_handler(State(sse_state))))
         // Token + Host gate for everything above; the page itself and its
         // static assets stay public (they contain no secrets — the token only

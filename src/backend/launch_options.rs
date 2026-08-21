@@ -5,6 +5,7 @@ pub const DEFAULT_PROTOCOL: &str = "atrust";
 pub const DEFAULT_SERVER: &str = "sslvpn.scmcc.com.cn";
 pub const DEFAULT_PORT: u16 = 443;
 pub const DEFAULT_SOCKS_BIND: &str = "127.0.0.1:1080";
+pub const DEFAULT_SOCKS_PORT: u16 = 1080;
 pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8888";
 pub const DEFAULT_SECONDARY_DNS_SERVER: &str = "223.5.5.5";
 pub const DEFAULT_AUTH_TYPE: &str = "auth/psw";
