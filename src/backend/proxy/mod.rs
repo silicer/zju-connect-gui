@@ -1,4 +1,6 @@
 pub mod captcha;
+#[cfg(target_os = "linux")]
+pub mod dns_probe;
 pub mod logs;
 pub mod proxybridge;
 pub mod readiness;

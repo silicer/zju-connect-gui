@@ -192,6 +192,14 @@ static ProxyType g_proxy_type = PROXY_TYPE_SOCKS5;
 static char g_proxy_username[256] = "";
 static char g_proxy_password[256] = "";
 static bool g_dns_via_proxy = true;
+
+// Local patch (see vendor/README.md): address that rule-matched DNS queries
+// aimed at a loopback stub resolver are sent to instead of being forced direct.
+// Zero (the default) keeps upstream behaviour. A loopback destination cannot be
+// resolved from the far side of the proxy, so without this the query is always
+// answered by the local machine's own resolver.
+static uint32_t g_dns_redirect_ip = 0;
+static uint16_t g_dns_redirect_port = 0;
 static uint32_t g_proxy_ip_cached = 0; // Cached resolved proxy IP
 static LogCallback g_log_callback = NULL;
 static ConnectionCallback g_connection_callback = NULL;
@@ -785,6 +793,17 @@ static bool is_broadcast_or_multicast(uint32_t ip)
         return true;
 
     return false;
+}
+
+// Local patch (see vendor/README.md): is this a DNS query that has to be sent
+// somewhere else to be useful? Only loopback destinations qualify - they are
+// unroutable from the proxy's far side, so a proxied query would either be
+// resolved on the wrong network or dropped.
+static bool dns_redirect_applies(uint32_t dest_ip, uint16_t dest_port)
+{
+    if (g_dns_redirect_ip == 0 || dest_port != 53)
+        return false;
+    return ((dest_ip >> 0) & 0xFF) == 127; // 127.0.0.0/8, as stored in the header
 }
 
 static RuleAction match_rule(const char *process_name, uint32_t dest_ip, uint16_t dest_port, bool is_udp)
@@ -1916,7 +1935,11 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
         else
             action = check_process_rule(src_ip, src_port, dest_ip, dest_port, true, &pid);
 
-        if (action == RULE_ACTION_PROXY && is_broadcast_or_multicast(dest_ip))
+        // Local patch (see vendor/README.md): a DNS query to a loopback resolver
+        // is proxied after all, so that it can be redirected below; every other
+        // loopback flow stays direct (the proxy's own listeners live there).
+        if (action == RULE_ACTION_PROXY && is_broadcast_or_multicast(dest_ip)
+            && !dns_redirect_applies(dest_ip, dest_port))
             action = RULE_ACTION_DIRECT;
 
         if (action == RULE_ACTION_PROXY && (dest_port == 67 || dest_port == 68))
@@ -1976,7 +1999,18 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
         else if (action == RULE_ACTION_PROXY)
         {
             // UDP proxy via SOCKS5 UDP ASSOCIATE
-            add_connection(src_port, src_ip, dest_ip, dest_port);
+            // Local patch (see vendor/README.md): record the address the relay
+            // must ask the SOCKS5 server for. Replies are matched back to this
+            // client through the same table entry, so the client still sees an
+            // answer from the resolver it originally queried.
+            uint32_t conn_dest_ip = dest_ip;
+            uint16_t conn_dest_port = dest_port;
+            if (dns_redirect_applies(dest_ip, dest_port))
+            {
+                conn_dest_ip = g_dns_redirect_ip;
+                conn_dest_port = g_dns_redirect_port;
+            }
+            add_connection(src_port, src_ip, conn_dest_ip, conn_dest_port);
 
             // Mark UDP packet for redirect to local UDP relay (port 34011)
             uint32_t mark = 2;  // Use mark=2 for UDP (mark=1 is for TCP)
@@ -2643,6 +2677,36 @@ void ProxyBridge_SetDnsViaProxy(bool enable)
     g_api_touched = true;
     g_dns_via_proxy = enable;
     log_message("dns via proxy %s", enable ? "enabled" : "disabled");
+}
+
+// Local patch (see vendor/README.md): send rule-matched DNS queries aimed at a
+// loopback resolver to this address instead (pass NULL to disable).
+void ProxyBridge_SetDnsRedirect(const char *dns_server, int dns_port)
+{
+    g_api_touched = true;
+    g_dns_redirect_ip = 0;
+    g_dns_redirect_port = 0;
+
+    if (dns_server != NULL && dns_port > 0 && dns_port <= 65535)
+    {
+        struct in_addr addr;
+        if (inet_pton(AF_INET, dns_server, &addr) == 1 && addr.s_addr != 0)
+        {
+            g_dns_redirect_ip = addr.s_addr;
+            g_dns_redirect_port = (uint16_t)dns_port;
+        }
+    }
+
+    if (g_dns_redirect_ip != 0)
+    {
+        char dns_server_str[32];
+        format_ip_address(g_dns_redirect_ip, dns_server_str, sizeof(dns_server_str));
+        log_message("dns redirect %s:%d", dns_server_str, g_dns_redirect_port);
+    }
+    else
+    {
+        log_message("dns redirect disabled");
+    }
 }
 
 void ProxyBridge_SetLogCallback(LogCallback callback)

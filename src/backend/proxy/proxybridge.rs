@@ -35,6 +35,8 @@ use crate::backend::launch_options::LaunchOptions;
 
 #[cfg(target_os = "windows")]
 use libloading::{Library, Symbol};
+#[cfg(target_os = "linux")]
+use std::ffi::c_int;
 #[cfg(not(target_os = "macos"))]
 use std::ffi::{c_char, CStr, CString};
 #[cfg(not(target_os = "macos"))]
@@ -126,6 +128,8 @@ extern "C" {
         action: i32,
     ) -> u32;
     fn ProxyBridge_SetDnsViaProxy(enable: u8);
+    /// Local patch to the vendored C (see `vendor/README.md`).
+    fn ProxyBridge_SetDnsRedirect(dns_server: *const c_char, dns_port: c_int);
     fn ProxyBridge_SetLogCallback(callback: Option<LogCallback>);
     fn ProxyBridge_Start() -> u8;
     fn ProxyBridge_Stop() -> u8;
@@ -136,6 +140,7 @@ struct Bindings {
     set_proxy_config: unsafe extern "C" fn(i32, *const c_char, u16, *const c_char, *const c_char),
     add_rule: unsafe extern "C" fn(*const c_char, *const c_char, *const c_char, i32, i32) -> u32,
     set_dns_via_proxy: unsafe extern "C" fn(u8),
+    set_dns_redirect: unsafe extern "C" fn(*const c_char, c_int),
     set_log_callback: unsafe extern "C" fn(Option<LogCallback>),
     start: unsafe extern "C" fn() -> u8,
     stop: unsafe extern "C" fn() -> u8,
@@ -149,6 +154,7 @@ fn bind_symbols() -> Bindings {
         set_proxy_config: ProxyBridge_SetProxyConfig,
         add_rule: ProxyBridge_AddRule,
         set_dns_via_proxy: ProxyBridge_SetDnsViaProxy,
+        set_dns_redirect: ProxyBridge_SetDnsRedirect,
         set_log_callback: ProxyBridge_SetLogCallback,
         start: ProxyBridge_Start,
         stop: ProxyBridge_Stop,
@@ -381,6 +387,28 @@ impl ProxyBridge {
             (self.b.stop)();
         }
     }
+
+    /// Send the listed processes' DNS queries aimed at a loopback resolver to
+    /// `server` instead of letting them be answered locally.
+    ///
+    /// Linux only, and only meaningful with a core started on
+    /// `-dns-server-bind`: the C entry point is a local patch to the vendored
+    /// sources (see `vendor/README.md`), while Windows loads a prebuilt DLL
+    /// that has no such API. Safe to call while interception is running — the
+    /// packet path reads the address per packet — and a `None` clears it.
+    #[cfg(target_os = "linux")]
+    pub fn set_dns_redirect(&self, server: Option<std::net::SocketAddrV4>) {
+        let (ip, port) = match server {
+            Some(addr) => (
+                CString::new(addr.ip().to_string()).ok(),
+                i32::from(addr.port()),
+            ),
+            None => (None, 0),
+        };
+        unsafe {
+            (self.b.set_dns_redirect)(ip.as_ref().map_or(std::ptr::null(), |ip| ip.as_ptr()), port);
+        }
+    }
 }
 
 // ── macOS: not supported, compiled out ────────────────────────────────
@@ -579,6 +607,29 @@ mod tests {
             line.contains("added rule id"),
             "unexpected log line: {line}"
         );
+    }
+
+    /// The DNS redirect entry point is a local patch to the vendored C (see
+    /// `vendor/README.md`), so this checks the two things a patch can silently
+    /// break: the symbol being linked in at all, and the address surviving the
+    /// C-side `inet_pton` round trip (the C setter logs it back in dotted form).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dns_redirect_api_round_trips_the_address() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pb = ProxyBridge::load(None, tx).expect("a statically linked core always loads");
+
+        pb.set_dns_redirect(Some("127.0.0.2:5353".parse().expect("literal address")));
+        let line = rx
+            .try_recv()
+            .expect("ProxyBridge_SetDnsRedirect should log the redirect");
+        assert!(line.contains("dns redirect 127.0.0.2:5353"), "{line}");
+
+        pb.set_dns_redirect(None);
+        let line = rx
+            .try_recv()
+            .expect("clearing the redirect should be logged too");
+        assert!(line.contains("dns redirect disabled"), "{line}");
     }
 
     /// The rule protocol is passed to the C library as a bare `int`, so nothing

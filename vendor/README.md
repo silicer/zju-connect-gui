@@ -48,8 +48,8 @@ texts.
 
 ## Local patches to upstream code
 
-`proxybridge-3.2.0/ProxyBridge.c` carries two changes, each marked with a comment
-at the site.
+`proxybridge-3.2.0/ProxyBridge.c` carries three changes, each marked with a
+comment at the site.
 
 ### 1. Portable `struct msghdr` initialization
 
@@ -77,8 +77,8 @@ Linking it in statically changes the meaning: the destructor is registered in
 never enabled ProxyBridge, each exit spawning four `iptables` child processes
 that fail noisily for a non-root user.
 
-The patch sets a `g_api_touched` flag in the six entry points this application
-uses and makes the destructor return early while it is unset, so the cleanup
+The patch sets a `g_api_touched` flag in every entry point this application
+calls and makes the destructor return early while it is unset, so the cleanup
 still happens for anyone who actually drove the library:
 
 | | `iptables` spawns at process exit |
@@ -91,11 +91,44 @@ Rules are only ever added by `ProxyBridge_Start` and removed by
 `ProxyBridge_Stop`, so skipping the fallback when nothing called into the library
 cannot leave anything behind.
 
+### 3. Tunnel-resolved DNS for the listed processes
+
+Upstream forces every destination in `127.0.0.0/8` to `RULE_ACTION_DIRECT` once a
+rule has matched (`is_broadcast_or_multicast`), so a listed process's DNS query
+to a loopback stub resolver — systemd-resolved's `127.0.0.53`, a local
+`dnsmasq` — is always answered by the local machine. Proxying it unchanged would
+not help either: the SOCKS5 UDP relay puts the *original* destination in the
+SOCKS5 request, and zju-connect dials a destination it cannot reach through the
+tunnel with a plain local socket (`dial/dialer_proxy.go`), so the query would
+simply reach the same local resolver.
+
+The patch adds `ProxyBridge_SetDnsRedirect(const char *ip, int port)`. For a
+rule-matched **UDP port 53** packet whose destination is loopback, the
+connection table records that address instead of the original one, so the relay
+asks the SOCKS5 server for it and the reply is matched back to the client —
+which still sees an answer from the resolver it originally queried (the
+iptables `REDIRECT` keeps the conntrack reverse mapping). With no redirect
+configured, which is the default, nothing changes. TCP port 53 is deliberately
+left alone: the DNS server this targets (the core's `-dns-server-bind` listener)
+is UDP-only, and redirecting the TCP retry after a truncated answer would only
+turn a slow lookup into a failure.
+
+Only the application decides when to arm it, and it does so only after probing
+that listener: it logs `Starting DNS server at ...` *before* binding, keeps
+running when the bind fails, and answers `NOERROR` with an empty answer section
+while the tunnel is still coming up — an answer a stub resolver caches as "no
+such name".
+
+One thing to watch when updating upstream: PR #165 adds
+`-t mangle -A OUTPUT -o lo -j ACCEPT` so that loopback traffic never reaches
+NFQUEUE. That shortcut would make this patch a no-op (the packet path only runs
+for queued packets), so it must not be re-applied ahead of it.
+
 ## Updating
 
 1. Download the new upstream release, drop in the sources and license, and
    delete the version you are replacing (keep the directory names in `build.rs`
    in sync).
-2. Re-apply the two patches described above if upstream has not fixed them.
+2. Re-apply the three patches described above if upstream has not fixed them.
 3. Rebuild for Linux and make sure the release binary is still static:
    `file` must report `statically linked`, with no `PT_INTERP`.

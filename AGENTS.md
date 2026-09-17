@@ -43,6 +43,9 @@ src/
       proxybridge.rs           ProxyBridge C API binding: Windows dlopens
                                ProxyBridgeCore.dll, Linux links the vendored
                                stack in statically (macOS stubbed out)
+      dns_probe.rs             readiness probe for the core's tunnel-backed
+                               DNS server before the loopback DNS hijack is
+                               armed (Linux only)
       windivert.rs             WinDivert kernel driver ensure/install/start
                                (Windows only, no-op elsewhere)
       logs.rs                  chunked stream reader + prompt detection
