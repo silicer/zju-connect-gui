@@ -40,9 +40,12 @@ src/
     proxy/                     supervisor + helpers
       manager.rs               ProxyManager, supervise_child task,
                                retry/readiness/eip-open generation logic
-      proxybridge.rs           ProxyBridge C API binding: Windows dlopens
-                               ProxyBridgeCore.dll, Linux links the vendored
-                               stack in statically (macOS stubbed out)
+      proxybridge.rs           ProxyBridge C API binding, statically linked on
+                               Linux and Windows x86_64 (macOS/Windows arm64
+                               stubbed out; upstream's DLL is no longer used)
+      dns_probe.rs             readiness probe for the core's tunnel-backed
+                               DNS server before the UDP DNS hijack is armed
+                               (Linux and Windows x86_64)
       windivert.rs             WinDivert kernel driver ensure/install/start
                                (Windows only, no-op elsewhere)
       logs.rs                  chunked stream reader + prompt detection
@@ -81,10 +84,12 @@ web/
     pico.min.css               Pico.css v2
 tests/
   proxy_manager.rs             integration tests with shell-script mock binary
-vendor/                        C sources compiled into the Linux binary by
-                               build.rs (ProxyBridge + its netfilter stack).
-                               Provenance, licensing and the local patches
-                               are documented in vendor/README.md
+vendor/                        C sources compiled into the binary by build.rs
+                               (Linux: ProxyBridge + its netfilter stack;
+                               Windows x86_64: ProxyBridge, plus a shim that
+                               loads WinDivert from `proxybridge/` at run
+                               time). Provenance, licensing and the local
+                               patches are documented in vendor/README.md
 ```
 
 ## Adding a new launch_options field
@@ -151,6 +156,12 @@ cargo test --all-targets
   (`CC_<triple>=musl-gcc`, i.e. `musl-tools`): the default host `cc` emits
   glibc-only references such as `__ctype_b_loc`, and the link fails. `zig cc`
   also works but needs a wrapper — see the header of `build.rs`.
+- On Windows x86_64, `build.rs` compiles the vendored ProxyBridge source as
+  well, so a C compiler is required: `cl.exe` on the MSVC targets CI uses, or
+  mingw/clang for a `*-pc-windows-gnu` build. Nothing else: the WinDivert DLL
+  is not linked against — it is loaded at run time from the package's
+  `proxybridge/` directory (`vendor/proxybridge-win-4.0.0/windivert_dynamic.c`),
+  so there is no import library to generate and nothing is downloaded.
 - `musl-gcc` does not search `/usr/include` at all (its specs file replaces the
   include path), so the kernel UAPI headers need `linux-libc-dev` on
   Debian/Ubuntu; `build.rs` puts them on the include path with `-idirafter`.

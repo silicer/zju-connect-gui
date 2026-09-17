@@ -1,4 +1,6 @@
 pub mod captcha;
+#[cfg(proxybridge_native)]
+pub mod dns_probe;
 pub mod logs;
 pub mod proxybridge;
 pub mod readiness;

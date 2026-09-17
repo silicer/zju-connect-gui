@@ -60,9 +60,30 @@ const VENDOR_LIBS: [&str; 3] = [
 /// Vendored ProxyBridge core, pinned by directory name.
 const PROXYBRIDGE_DIR: &str = "proxybridge-3.2.0";
 
+/// Vendored ProxyBridge core for Windows, pinned by directory name.
+const PROXYBRIDGE_WIN_DIR: &str = "proxybridge-win-4.0.0";
+
+/// Vendored WinDivert header. The DLL itself is shipped in the package's
+/// `proxybridge/` directory and resolved at run time (see `windivert_dynamic.c`).
+const WINDIVERT_DIR: &str = "windivert-2.2.2-A";
+
 fn main() {
     println!("cargo:rerun-if-changed=assets/app.rc");
     println!("cargo:rerun-if-changed=assets/gemini.ico");
+
+    // `proxybridge_native` marks the targets where the vendored core is compiled
+    // into this binary: Linux, and Windows x86_64. Everywhere else — macOS, and
+    // Windows arm64, for which upstream ships no WinDivert build — the
+    // integration is stubbed out in Rust.
+    println!("cargo::rustc-check-cfg=cfg(proxybridge_native)");
+    let proxybridge_native = match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => true,
+        Ok("windows") => env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64"),
+        _ => false,
+    };
+    if proxybridge_native {
+        println!("cargo:rustc-cfg=proxybridge_native");
+    }
 
     // Windows/MSVC only (a no-op on every other target): link the VCRuntime
     // statically while leaving the Universal CRT dynamic. The UCRT is part of
@@ -72,12 +93,60 @@ fn main() {
     static_vcruntime::metabuild();
 
     match env::var("CARGO_CFG_TARGET_OS").as_deref() {
-        Ok("windows") => embed_resource::compile("assets/app.rc", embed_resource::NONE),
+        Ok("windows") => {
+            embed_resource::compile("assets/app.rc", embed_resource::NONE);
+            // Windows arm64 has no WinDivert build, so ProxyBridge stays a stub
+            // there and nothing is compiled.
+            if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
+                compile_windows_proxybridge();
+            }
+        }
         // macOS: upstream ships no reusable core library, so the integration is
         // stubbed out in Rust and nothing is compiled here.
         Ok("linux") => compile_proxybridge_stack(),
         _ => {}
     }
+}
+
+/// Compile the vendored Windows ProxyBridge core into a static archive.
+///
+/// Upstream ships `ProxyBridgeCore.dll`, which the app used to `dlopen`. The
+/// DLL is built from exactly this source, carrying two local patches (the DNS
+/// redirect and `__forceinline`, see `vendor/README.md`), so the app compiles it
+/// in instead: the `ProxyBridge_*` symbols then resolve at link time and no DLL
+/// has to be shipped or loaded.
+///
+/// WinDivert is untouched — still the upstream DLL, shipped in `proxybridge/`
+/// and resolved on first use by `windivert_dynamic.c`, which keeps the
+/// executable free of a load-time dependency on it.
+fn compile_windows_proxybridge() {
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+    let vendor = manifest_dir.join("vendor");
+    let windivert = vendor.join(WINDIVERT_DIR);
+    let proxybridge = vendor.join(PROXYBRIDGE_WIN_DIR);
+
+    let mut build = cc::Build::new();
+    build.include(&windivert);
+    build.define("_WIN32_WINNT", "0x0601");
+    build.define("PROXYBRIDGE_EXPORTS", None);
+    // Upstream's WinDivert header declares its functions as `dllimport` unless
+    // this is set. Nothing links against the import library: the DLL is loaded
+    // at run time from `<exe dir>\proxybridge\` (see `windivert_dynamic.c`), so
+    // the executable itself has no load-time dependency on it — without that,
+    // a package that keeps WinDivert.dll in `proxybridge/` could not start.
+    build.define("WINDIVERTEXPORT", "extern");
+    // Pinned third-party sources: not ours to police for warnings.
+    build.warnings(false);
+    build.file(proxybridge.join("ProxyBridge.c"));
+    build.file(proxybridge.join("windivert_dynamic.c"));
+    build.compile("proxybridge");
+
+    println!("cargo:rustc-link-lib=dylib=ws2_32");
+    println!("cargo:rustc-link-lib=dylib=iphlpapi");
+
+    // Headers are not tracked by `cc`.
+    println!("cargo:rerun-if-changed={}", vendor.display());
 }
 
 /// Compile the vendored ProxyBridge / netfilter stack into a static archive.

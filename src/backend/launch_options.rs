@@ -7,6 +7,10 @@ pub const DEFAULT_PORT: u16 = 443;
 pub const DEFAULT_SOCKS_BIND: &str = "127.0.0.1:1080";
 pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8888";
 pub const DEFAULT_SECONDARY_DNS_SERVER: &str = "223.5.5.5";
+/// Loopback address of the core's tunnel-backed DNS server in proxy-only mode.
+/// ProxyBridge sends the listed processes' UDP DNS queries to it; it is never
+/// bound beyond 127.0.0.0/8 (see `parse_loopback_addr`).
+pub const DEFAULT_DNS_SERVER_BIND: &str = "127.0.0.1:15353";
 pub const DEFAULT_AUTH_TYPE: &str = "auth/psw";
 pub const DEFAULT_LOGIN_DOMAIN: &str = "AD";
 pub const DEFAULT_CLIENT_DATA_FILE: &str = "client_data.json";
@@ -30,6 +34,17 @@ pub fn default_proxybridge_processes() -> Vec<String> {
     {
         Vec::new()
     }
+}
+
+/// Parse a `host:port` DNS listener address, accepting IPv4 loopback only.
+///
+/// The core's DNS server answers any query it receives — it has no
+/// authentication and no source filtering — so it must stay on the loopback
+/// interface. Anything else is treated as unusable and the caller falls back to
+/// the default.
+pub fn parse_loopback_addr(value: &str) -> Option<std::net::SocketAddrV4> {
+    let addr: std::net::SocketAddrV4 = value.trim().parse().ok()?;
+    addr.ip().is_loopback().then_some(addr)
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +72,19 @@ pub struct LaunchOptions {
     pub proxybridge_processes: Vec<String>,
     #[serde(default)]
     pub proxybridge_path: Option<String>,
+    /// `host:port` the core's DNS server listens on in proxy-only mode, and the
+    /// address the listed processes' UDP DNS queries are sent to.
+    #[serde(default)]
+    pub dns_server_bind: String,
+    /// Opt-in: route the listed processes' UDP DNS queries through the core's
+    /// tunnel-backed resolver instead of letting the local resolver answer.
+    ///
+    /// Off by default, which keeps the upstream behaviour — including v4's
+    /// Domain Name Forwarding (the proxy re-resolves a name the machine has
+    /// already resolved). This switch is for names the local resolver cannot
+    /// resolve at all, which that mechanism cannot help with.
+    #[serde(default)]
+    pub proxybridge_dns_hijack: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
@@ -95,6 +123,7 @@ pub fn normalize_launch_options(mut options: LaunchOptions) -> LaunchOptions {
     options.auth_type = options.auth_type.trim().to_string();
     options.login_domain = options.login_domain.trim().to_string();
     options.client_data_file = options.client_data_file.trim().to_string();
+    options.dns_server_bind = options.dns_server_bind.trim().to_string();
     options.eip_browser_program = options.eip_browser_program.trim().to_string();
     options.eip_browser_args = normalize_string_list(options.eip_browser_args);
     options.proxybridge_processes = normalize_string_list(options.proxybridge_processes);
@@ -129,6 +158,9 @@ pub fn normalize_launch_options(mut options: LaunchOptions) -> LaunchOptions {
     }
     if options.client_data_file.is_empty() {
         options.client_data_file = DEFAULT_CLIENT_DATA_FILE.to_string();
+    }
+    if parse_loopback_addr(&options.dns_server_bind).is_none() {
+        options.dns_server_bind = DEFAULT_DNS_SERVER_BIND.to_string();
     }
     options
 }
@@ -182,6 +214,20 @@ impl LaunchOptions {
         Ok(())
     }
 
+    /// Whether this launch should start the core's tunnel-backed DNS server and
+    /// have ProxyBridge send the listed processes' UDP DNS queries to it.
+    ///
+    /// Opt-in via `proxybridge_dns_hijack`, and only where the vendored C
+    /// carries the `ProxyBridge_SetDnsRedirect` patch (Linux and Windows x86_64
+    /// — see `vendor/README.md`). TUN mode already hijacks DNS through the
+    /// tunnel interface itself, so this is proxy-only.
+    pub fn dns_hijack_enabled(&self) -> bool {
+        cfg!(proxybridge_native)
+            && !self.tun_mode
+            && self.proxybridge_enabled
+            && self.proxybridge_dns_hijack
+    }
+
     pub fn build_args(&self, captcha_path: &str) -> Vec<String> {
         let mut args = vec![
             "-protocol".into(),
@@ -220,6 +266,15 @@ impl LaunchOptions {
                 "-fake-ip".into(),
             ]);
         }
+        if self.dns_hijack_enabled() {
+            // In proxy-only mode the SOCKS5 UDP relay dials unmatched
+            // destinations on the local machine, so proxied DNS resolves
+            // locally. The core's own DNS server is the one resolver that
+            // answers through the tunnel, so start it and let ProxyBridge send
+            // the listed processes' UDP DNS queries to it.
+            args.push("-dns-server-bind".into());
+            args.push(self.dns_server_bind.clone());
+        }
         if self.debug_dump {
             args.push("-debug-dump".into());
         }
@@ -251,6 +306,7 @@ mod tests {
             normalized.secondary_dns_server,
             DEFAULT_SECONDARY_DNS_SERVER
         );
+        assert_eq!(normalized.dns_server_bind, DEFAULT_DNS_SERVER_BIND);
         assert_eq!(normalized.auth_type, DEFAULT_AUTH_TYPE);
         assert_eq!(normalized.login_domain, DEFAULT_LOGIN_DOMAIN);
         assert_eq!(normalized.client_data_file, DEFAULT_CLIENT_DATA_FILE);
@@ -367,6 +423,77 @@ mod tests {
         assert!(!args.iter().any(|a| a == "-tun-mode"));
         assert!(!args.iter().any(|a| a == "-debug-dump"));
         assert!(!args.iter().any(|a| a == "-graph-code-file"));
+        // ProxyBridge is off, so no DNS listener is needed either.
+        assert!(!args.iter().any(|a| a == "-dns-server-bind"));
         assert_eq!(args.first().map(String::as_str), Some("-protocol"));
+    }
+
+    #[test]
+    fn build_args_binds_the_tunnel_dns_server_when_the_hijack_is_on() {
+        // Opt-in: with the switch off, nothing changes for the core or the
+        // bridge — upstream behaviour, Domain Name Forwarding included.
+        let off = LaunchOptions {
+            username: "alice".into(),
+            password: "p@ss".into(),
+            proxybridge_enabled: true,
+            ..normalize_launch_options(LaunchOptions::default())
+        };
+        assert!(!off.dns_hijack_enabled());
+        assert!(!off.build_args("").iter().any(|a| a == "-dns-server-bind"));
+
+        let opts = LaunchOptions {
+            proxybridge_dns_hijack: true,
+            ..off
+        };
+        assert!(opts.dns_hijack_enabled());
+        let args = opts.build_args("");
+
+        if cfg!(proxybridge_native) {
+            let i = args
+                .iter()
+                .position(|a| a == "-dns-server-bind")
+                .expect("the DNS hijack needs the core's own resolver");
+            assert_eq!(args[i + 1], DEFAULT_DNS_SERVER_BIND);
+        } else {
+            assert!(!args.iter().any(|a| a == "-dns-server-bind"));
+        }
+
+        // TUN mode hijacks DNS through the tunnel interface instead.
+        let tun = LaunchOptions {
+            tun_mode: true,
+            ..opts
+        };
+        assert!(!tun.dns_hijack_enabled());
+        assert!(!tun.build_args("").iter().any(|a| a == "-dns-server-bind"));
+    }
+
+    #[test]
+    fn dns_server_bind_must_stay_on_loopback() {
+        for bad in [
+            "0.0.0.0:53",
+            "192.168.1.10:5353",
+            "127.0.0.1",
+            "nonsense",
+            "",
+        ] {
+            let raw = LaunchOptions {
+                dns_server_bind: bad.into(),
+                ..LaunchOptions::default()
+            };
+            assert_eq!(
+                normalize_launch_options(raw).dns_server_bind,
+                DEFAULT_DNS_SERVER_BIND,
+                "{bad} should not be accepted as a DNS listener address"
+            );
+        }
+
+        let raw = LaunchOptions {
+            dns_server_bind: " 127.0.0.2:5353 ".into(),
+            ..LaunchOptions::default()
+        };
+        assert_eq!(
+            normalize_launch_options(raw).dns_server_bind,
+            "127.0.0.2:5353"
+        );
     }
 }

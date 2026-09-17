@@ -37,6 +37,9 @@ bool ProxyBridge_DeleteRule(uint32_t rule_id);
 bool ProxyBridge_EditRule(uint32_t rule_id, const char* process_name, const char* target_hosts, const char* target_ports, RuleProtocol protocol, RuleAction action);
 bool ProxyBridge_SetProxyConfig(ProxyType type, const char* proxy_ip, uint16_t proxy_port, const char* username, const char* password);
 void ProxyBridge_SetDnsViaProxy(bool enable);
+// Local patch (see vendor/README.md): redirect rule-matched DNS queries that
+// target a loopback resolver to dns_server:dns_port. Pass NULL to disable.
+void ProxyBridge_SetDnsRedirect(const char *dns_server, int dns_port);
 void ProxyBridge_SetLogCallback(LogCallback callback);
 void ProxyBridge_SetConnectionCallback(ConnectionCallback callback);
 void ProxyBridge_SetTrafficLoggingEnabled(bool enable);

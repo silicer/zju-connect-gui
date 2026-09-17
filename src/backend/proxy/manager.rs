@@ -3,6 +3,8 @@ use crate::backend::launch_options::LaunchOptions;
 use crate::backend::proxy::captcha::{
     encode_captcha, monitor_captcha_file, poll_for_stable_captcha,
 };
+#[cfg(proxybridge_native)]
+use crate::backend::proxy::dns_probe;
 use crate::backend::proxy::logs::{
     classify_prompt, consume_stream, is_route_added, is_vpn_started, DetectedPrompt,
 };
@@ -30,6 +32,11 @@ const MIN_EIP_AUTO_OPEN_DELAY: Duration = Duration::from_secs(3);
 const MAX_EIP_AUTO_OPEN_DELAY: Duration = Duration::from_secs(5);
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const CAPTCHA_FILE_NAME: &str = "gui_captcha.png";
+/// How long to wait for the core's DNS server to answer a real query before
+/// giving up on hijacking DNS through it. The core starts that listener
+/// asynchronously and, until the tunnel is usable, answers empty NOERROR.
+#[cfg(proxybridge_native)]
+const DNS_PROBE_BUDGET: Duration = Duration::from_secs(5);
 
 /// Events the proxy manager emits to the UI side. The UI converts these into Slint
 /// model updates / dialog spawns / status messages.
@@ -1305,6 +1312,68 @@ fn start_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
         state.proxybridge_handle = Some(log_handle);
     }
     inner.emit_log("[proxybridge] started".to_string());
+
+    #[cfg(proxybridge_native)]
+    setup_dns_hijack(&inner, &options);
+}
+
+/// Linux only: hand the C library the address of the core's own DNS server, so
+/// that a listed process's UDP DNS queries are answered through the tunnel
+/// instead of by whichever resolver the process was pointed at
+/// (systemd-resolved's 127.0.0.53, a public DNS, ...).
+///
+/// This is the only way to get tunnel-resolved DNS for a listed process: the
+/// core's SOCKS5 UDP relay dials destinations it cannot reach through the
+/// tunnel with a plain local socket, so proxying the query would just re-reach
+/// a local resolver.
+///
+/// The redirect is armed only once the server demonstrably answers a real
+/// query. The core logs `Starting DNS server at ...` *before* binding, keeps
+/// running when the bind fails, and replies NOERROR with an empty answer
+/// section (never SERVFAIL) while the tunnel is coming up — a stub resolver
+/// caches that as "no such name", which is worse than not redirecting at all.
+#[cfg(proxybridge_native)]
+fn setup_dns_hijack(inner: &Arc<Inner>, options: &LaunchOptions) {
+    if !options.dns_hijack_enabled() {
+        return;
+    }
+
+    let target = crate::backend::launch_options::parse_loopback_addr(&options.dns_server_bind);
+    let Some(target) = target else {
+        inner.emit_log(format!(
+            "[proxybridge] invalid DNS server address: {}",
+            options.dns_server_bind
+        ));
+        return;
+    };
+
+    let probe_name = dns_probe::probe_name(&options.server);
+    let resolver = std::net::SocketAddr::V4(target);
+    let ready = tokio::task::block_in_place(|| {
+        dns_probe::wait_for_answer(resolver, probe_name, DNS_PROBE_BUDGET)
+    });
+
+    // Always write the decision through, including a negative one: an earlier
+    // session may have left a redirect armed, and pointing the listed processes
+    // at a resolver that does not answer now would break their DNS.
+    {
+        let state = inner.state.lock().expect("state mutex poisoned");
+        if let Some(pb) = state.proxybridge.as_ref() {
+            pb.set_dns_redirect(ready.then_some(target));
+        }
+    }
+
+    if ready {
+        inner.emit_log(format!(
+            "[proxybridge] DNS hijack enabled: UDP DNS queries of the listed processes go to {}",
+            options.dns_server_bind
+        ));
+    } else {
+        inner.emit_log(format!(
+            "[proxybridge] no DNS answer from {}, keeping the listed processes on local resolution",
+            options.dns_server_bind
+        ));
+    }
 }
 
 #[cfg(test)]

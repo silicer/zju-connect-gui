@@ -32,9 +32,8 @@ nix = { version = "0.29", default-features = false, features = ["signal"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# Loads the bundled ProxyBridgeCore.dll. Linux has no runtime loader for this:
-# the stack is compiled into the binary by build.rs instead (see vendor/).
-libloading = "0.8"
+# The ProxyBridge core is compiled into the binary by build.rs on every
+# platform that supports it (see vendor/); nothing is loaded at run time.
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",

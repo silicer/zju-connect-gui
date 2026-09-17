@@ -111,18 +111,27 @@
       <div x-show="settings.proxybridgeEnabled" style="margin-left:1rem">
         <label style="font-size:0.85rem;color:var(--pico-muted-color)">
           代理进程列表（每行一个进程名，支持通配符 *）：
-          <textarea x-model="proxybridgeProcessesText" rows="4"
-            placeholder="chrome.exe&#10;firefox.exe&#10;steam*.exe"
+          <textarea x-model="proxybridgeProcessesText"
+            @input="settings.proxybridgeProcesses = parseLines($event.target.value)"
+            rows="4" placeholder="chrome.exe&#10;firefox.exe&#10;steam*.exe"
             style="font-family:monospace;font-size:0.8rem"></textarea>
         </label>
-        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
-          💡 修改进程列表或路径后，需停止并重新连接才生效
-        </p>
-        <label style="font-size:0.85rem;color:var(--pico-muted-color)">
-          ProxyBridge 路径（留空自动检测）：
-          <input type="text" x-model="settings.proxybridgePath"
-            placeholder="留空自动检测（安装目录 / 捆绑目录）">
+        <label>
+          <input type="checkbox" x-model="settings.proxybridgeDnsHijack">
+          让列表进程的 DNS 也走隧道（DNS 劫持）
         </label>
+        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 修改进程列表后，需停止并重新连接才生效
+        </p>
+        <p x-show="settings.proxybridgeDnsHijack" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 开启后，列表进程发往任意解析器的 UDP DNS 查询都由核心的隧道内解析器回答，本机解析不了的域名也能解析；该解析器未就绪时自动退回本机解析（详见日志）
+        </p>
+        <p x-show="settings.proxybridgeDnsHijack && isWindows" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
+          ⚠️ Windows 的域名解析由系统服务（svchost.exe）代发，因此会接管它 53 端口的查询——相当于所有程序的 DNS 都经隧道解析
+        </p>
+        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 若域名在本机可以解析、只是希望交由代理重新解析，v4 自带的 Domain Name Forwarding 已经覆盖，无需开启此项
+        </p>
         <p x-show="needsElevation" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限
         </p>
@@ -143,7 +152,9 @@
       </label>
       <label>
         浏览器参数（每行一个）
-        <textarea x-model="eipBrowserArgsText" rows="3" placeholder="--kiosk&#10;--new-window"></textarea>
+        <textarea x-model="eipBrowserArgsText"
+          @input="settings.eipBrowserArgs = parseLines($event.target.value)"
+          rows="3" placeholder="--kiosk&#10;--new-window"></textarea>
       </label>
     </details>
 
@@ -271,29 +282,32 @@ document.addEventListener('alpine:init', () => {
       tunMode: true, debugDump: false,
       eipBrowserProgram: '', eipBrowserArgs: [],
       proxybridgeEnabled: false, proxybridgeProcesses: [...defaultProxybridgeProcesses],
-      proxybridgePath: '',
+      proxybridgeDnsHijack: false,
     },
+    // Raw text of the two "one entry per line" textareas. They are plain
+    // fields, not x-model getter/setter pairs: x-model writes the model value
+    // back into the element after every input event, so a setter that trims
+    // and drops empty lines erased the newline the instant Enter was pressed
+    // and a multi-line list could not be typed at all. The arrays are derived
+    // on input instead (see `parseLines`).
+    proxybridgeProcessesText: defaultProxybridgeProcesses.join('\n'),
+    eipBrowserArgsText: '',
     get proxyOnly() {
       return !this.settings.tunMode;
     },
     set proxyOnly(v) {
       this.settings.tunMode = !v;
     },
-    get eipBrowserArgsText() {
-      return (this.settings.eipBrowserArgs || []).join('\n');
-    },
-    set eipBrowserArgsText(v) {
-      this.settings.eipBrowserArgs = v.split('\n').map(s => s.trim()).filter(s => s);
-    },
-    get proxybridgeProcessesText() {
-      return (this.settings.proxybridgeProcesses || []).join('\n');
-    },
-    set proxybridgeProcessesText(v) {
-      this.settings.proxybridgeProcesses = v.split('\n').map(s => s.trim()).filter(s => s);
+    parseLines(v) {
+      return (v || '').split('\n').map(s => s.trim()).filter(s => s);
     },
     ensureDefaultProxybridgeProcesses() {
       if (!(this.settings.proxybridgeProcesses || []).length) {
-        this.settings.proxybridgeProcesses = [...defaultProxybridgeProcesses];
+        // Prefer what is already in the textarea so unchecking and re-checking
+        // the box does not throw a hand-written list away.
+        const typed = this.parseLines(this.proxybridgeProcessesText);
+        this.settings.proxybridgeProcesses = typed.length ? typed : [...defaultProxybridgeProcesses];
+        if (!typed.length) this.proxybridgeProcessesText = defaultProxybridgeProcesses.join('\n');
       }
     },
     get needsElevation() {
@@ -327,6 +341,10 @@ document.addEventListener('alpine:init', () => {
         if (r.ok) {
           const opts = await r.json();
           Object.assign(this.settings, opts);
+          // The two textareas are plain fields (see above), so seed them from
+          // the loaded settings once here.
+          this.proxybridgeProcessesText = (this.settings.proxybridgeProcesses || []).join('\n');
+          this.eipBrowserArgsText = (this.settings.eipBrowserArgs || []).join('\n');
         }
       } catch (e) {
         if (e.authFailed) this.statusMessage = e.message;
