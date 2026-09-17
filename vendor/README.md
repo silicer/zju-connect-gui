@@ -53,11 +53,12 @@ source — which is precisely what this directory is — along with the license
 texts.
 
 `windivert-2.2.2-A/` is a different case: WinDivert is dual-licensed
-**LGPL-3.0 or GPL-2.0**, and only its header (`windivert.h`) and its export
-list (`windivert.def`) are vendored — enough to compile and link against the
-DLL. `WinDivert.dll` and the signed `WinDivert64.sys` driver are still the
-upstream binaries, redistributed untouched in the Windows package and loaded
-dynamically, which is what the LGPL asks for.
+**LGPL-3.0 or GPL-2.0**, and only its header (`windivert.h`) is vendored — the
+DLL is not linked against at build time at all. `WinDivert.dll` and the signed
+`WinDivert64.sys` driver are still the upstream binaries, redistributed
+untouched in the Windows package's `proxybridge/` directory and loaded from
+there at run time, which is what the LGPL asks for and keeps the executable's
+own package layout independent of them.
 
 ## Local patches to upstream code
 
@@ -152,10 +153,13 @@ for queued packets), so it must not be re-applied ahead of it.
 
 ### Windows core: `proxybridge-win-4.0.0/`
 
-It carries two changes. Upstream ships a prebuilt `ProxyBridgeCore.dll`; this
-repository compiles the same source into the executable instead (see
-`build.rs`), so the patches below are simply available at link time. WinDivert
-is untouched and stays the upstream DLL.
+It carries three changes, one of them a new file of ours (marked as such at the
+top). Upstream ships a prebuilt `ProxyBridgeCore.dll`; this repository compiles
+the same source into the executable instead (see `build.rs`), so the patches
+below are simply available at link time. WinDivert is untouched and stays the
+upstream DLL — but *how* it is reached had to change, because a static import
+would tie the whole executable to a file the package deliberately keeps in
+`proxybridge/`.
 
 #### 1. `__forceinline` under GCC and clang
 
@@ -191,6 +195,27 @@ which makes DNS system-wide while ProxyBridge runs. That is unavoidable with a
 shared resolver, and it is still scoped: only port 53 of that host process is
 captured.
 
+#### 3. WinDivert resolved at run time (`windivert_dynamic.c`)
+
+This one is a new file of ours rather than a change to upstream's, plus one
+adjusted log message.
+
+Compiling the core *into* the executable turns its WinDivert calls into entries
+in the executable's static import table — and the Windows loader resolves that
+table before `main` runs, searching only the executable's own directory, the
+system directories and `PATH`. Because the package keeps `WinDivert.dll` in
+`proxybridge/` (next to the signed driver), a static import makes the *whole
+application* refuse to start, even for users who never enable ProxyBridge.
+
+Upstream's source is therefore compiled with `WINDIVERTEXPORT=extern` (see
+`build.rs`), which turns its eight WinDivert calls into ordinary extern
+references, and `windivert_dynamic.c` defines them: the first call loads
+`WinDivert.dll` from `<exe dir>\proxybridge\`, then `<exe dir>` (where older
+releases copied it), then the default search order, and forwards every call
+through `GetProcAddress`. A missing DLL now fails the ProxyBridge start with a
+log line instead of preventing the process from launching at all, and nothing
+has to be placed next to the executable.
+
 ## Updating
 
 1. Download the new upstream release, drop in the sources and license, and
@@ -199,7 +224,8 @@ captured.
    and `Windows/src/`.
 2. Re-apply the patches described above if upstream has not fixed them.
 3. Rebuild and check both artefacts: on Linux `file` must still report
-   `statically linked` with no `PT_INTERP`, and on Windows the executable must
-   import `WinDivert.dll` but **not** `ProxyBridgeCore.dll` — the core is inside
-   it. `x86_64-w64-mingw32-objdump -p zju-connect-gui.exe | grep "DLL Name"`
-   shows this in one line.
+   `statically linked` with no `PT_INTERP`; on Windows the executable must
+   import **neither** `ProxyBridgeCore.dll` (the core is compiled in) **nor**
+   `WinDivert.dll` (it is loaded at run time from `proxybridge/`) — listing the
+   imports is the whole check:
+   `x86_64-w64-mingw32-objdump -p zju-connect-gui.exe | grep "DLL Name"`.

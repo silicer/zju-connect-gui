@@ -49,7 +49,6 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Vendored libraries, pinned by directory name. See `vendor/README.md`.
 const VENDOR_LIBS: [&str; 3] = [
@@ -64,8 +63,8 @@ const PROXYBRIDGE_DIR: &str = "proxybridge-3.2.0";
 /// Vendored ProxyBridge core for Windows, pinned by directory name.
 const PROXYBRIDGE_WIN_DIR: &str = "proxybridge-win-4.0.0";
 
-/// Vendored WinDivert headers + export list (the DLL itself is shipped next to
-/// the executable, exactly as before).
+/// Vendored WinDivert header. The DLL itself is shipped in the package's
+/// `proxybridge/` directory and resolved at run time (see `windivert_dynamic.c`).
 const WINDIVERT_DIR: &str = "windivert-2.2.2-A";
 
 fn main() {
@@ -112,107 +111,42 @@ fn main() {
 /// Compile the vendored Windows ProxyBridge core into a static archive.
 ///
 /// Upstream ships `ProxyBridgeCore.dll`, which the app used to `dlopen`. The
-/// DLL is built from exactly this source, carrying one local patch (the DNS
-/// redirect, see `vendor/README.md`), so the app compiles it in instead: the
-/// `ProxyBridge_*` symbols then resolve at link time and no DLL has to be
-/// shipped next to the executable. WinDivert is untouched — it stays the
-/// upstream DLL, loaded at run time by the code below.
+/// DLL is built from exactly this source, carrying two local patches (the DNS
+/// redirect and `__forceinline`, see `vendor/README.md`), so the app compiles it
+/// in instead: the `ProxyBridge_*` symbols then resolve at link time and no DLL
+/// has to be shipped or loaded.
+///
+/// WinDivert is untouched — still the upstream DLL, shipped in `proxybridge/`
+/// and resolved on first use by `windivert_dynamic.c`, which keeps the
+/// executable free of a load-time dependency on it.
 fn compile_windows_proxybridge() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
     let vendor = manifest_dir.join("vendor");
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set"));
     let windivert = vendor.join(WINDIVERT_DIR);
+    let proxybridge = vendor.join(PROXYBRIDGE_WIN_DIR);
 
     let mut build = cc::Build::new();
     build.include(&windivert);
     build.define("_WIN32_WINNT", "0x0601");
     build.define("PROXYBRIDGE_EXPORTS", None);
-    // Pinned third-party source: not ours to police for warnings.
+    // Upstream's WinDivert header declares its functions as `dllimport` unless
+    // this is set. Nothing links against the import library: the DLL is loaded
+    // at run time from `<exe dir>\proxybridge\` (see `windivert_dynamic.c`), so
+    // the executable itself has no load-time dependency on it — without that,
+    // a package that keeps WinDivert.dll in `proxybridge/` could not start.
+    build.define("WINDIVERTEXPORT", "extern");
+    // Pinned third-party sources: not ours to police for warnings.
     build.warnings(false);
-    build.file(vendor.join(PROXYBRIDGE_WIN_DIR).join("ProxyBridge.c"));
-
-    // WinDivert is distributed as a DLL plus an MSVC import library. Neither is
-    // usable as-is by every toolchain (and committing a binary blob is not the
-    // point either), so the import library is generated from the vendored
-    // export list with the tool that matches the compiler.
-    generate_import_library(
-        &windivert.join("windivert.def"),
-        &out_dir,
-        &build.get_compiler(),
-    );
-
+    build.file(proxybridge.join("ProxyBridge.c"));
+    build.file(proxybridge.join("windivert_dynamic.c"));
     build.compile("proxybridge");
 
-    println!(
-        "cargo:rustc-link-search=native={}",
-        out_dir.to_string_lossy()
-    );
-    println!("cargo:rustc-link-lib=dylib=WinDivert");
     println!("cargo:rustc-link-lib=dylib=ws2_32");
     println!("cargo:rustc-link-lib=dylib=iphlpapi");
 
-    // Headers and the export list are not tracked by `cc`.
+    // Headers are not tracked by `cc`.
     println!("cargo:rerun-if-changed={}", vendor.display());
-}
-
-/// Build an import library for `WinDivert.dll` from a `.def` export list.
-///
-/// `lib.exe`/`llvm-lib` produce the MSVC flavour that `link.exe` expects, and
-/// `dlltool`/`llvm-dlltool` the GNU flavour for mingw. The first tool of each
-/// family that works wins, so both supported Windows toolchains build offline
-/// with no SDK download.
-fn generate_import_library(def: &Path, out_dir: &Path, compiler: &cc::Tool) {
-    let mut errors = Vec::new();
-
-    if compiler.is_like_msvc() {
-        // `lib.exe` sits next to the `cl.exe` that `cc` resolved, which is how
-        // this works without a Visual Studio developer prompt.
-        let lib_tool = compiler
-            .path()
-            .parent()
-            .map(|dir| dir.join("lib.exe"))
-            .filter(|path| path.is_file());
-        let archive = out_dir.join("WinDivert.lib");
-        let mut cmd = match &lib_tool {
-            Some(tool) => Command::new(tool),
-            None => Command::new("lib.exe"),
-        };
-        match cmd
-            .arg(format!("/def:{}", def.display()))
-            .arg(format!("/out:{}", archive.display()))
-            .arg("/machine:x64")
-            .status()
-        {
-            Ok(status) if status.success() => return,
-            Ok(status) => errors.push(format!("lib.exe exited with {status}")),
-            Err(e) => errors.push(format!("lib.exe: {e}")),
-        }
-    }
-
-    let archive = out_dir.join("libWinDivert.a");
-    let attempts: [(&str, Option<&str>); 3] = [
-        ("llvm-dlltool", Some("i386:x86-64")),
-        ("dlltool", None),
-        ("x86_64-w64-mingw32-dlltool", None),
-    ];
-    for (tool, machine) in attempts {
-        let mut cmd = Command::new(tool);
-        if let Some(machine) = machine {
-            cmd.arg("-m").arg(machine);
-        }
-        match cmd.arg("-d").arg(def).arg("-l").arg(&archive).status() {
-            Ok(status) if status.success() => return,
-            Ok(status) => errors.push(format!("{tool} exited with {status}")),
-            Err(e) => errors.push(format!("{tool}: {e}")),
-        }
-    }
-
-    panic!(
-        "cannot build the WinDivert import library from {}: {}",
-        def.display(),
-        errors.join("; ")
-    );
 }
 
 /// Compile the vendored ProxyBridge / netfilter stack into a static archive.

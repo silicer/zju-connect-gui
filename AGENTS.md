@@ -86,10 +86,10 @@ tests/
   proxy_manager.rs             integration tests with shell-script mock binary
 vendor/                        C sources compiled into the binary by build.rs
                                (Linux: ProxyBridge + its netfilter stack;
-                               Windows x86_64: ProxyBridge, plus a WinDivert
-                               import library generated from the vendored
-                               export list). Provenance, licensing and the
-                               local patches are documented in vendor/README.md
+                               Windows x86_64: ProxyBridge, plus a shim that
+                               loads WinDivert from `proxybridge/` at run
+                               time). Provenance, licensing and the local
+                               patches are documented in vendor/README.md
 ```
 
 ## Adding a new launch_options field
@@ -158,10 +158,10 @@ cargo test --all-targets
   also works but needs a wrapper — see the header of `build.rs`.
 - On Windows x86_64, `build.rs` compiles the vendored ProxyBridge source as
   well, so a C compiler is required: `cl.exe` on the MSVC targets CI uses, or
-  mingw/clang for a `*-pc-windows-gnu` build. It also turns
-  `vendor/windivert-2.2.2-A/windivert.def` into an import library, using
-  `lib.exe` next to `cl.exe` on MSVC and `dlltool`/`llvm-dlltool` otherwise —
-  nothing is downloaded at build time.
+  mingw/clang for a `*-pc-windows-gnu` build. Nothing else: the WinDivert DLL
+  is not linked against — it is loaded at run time from the package's
+  `proxybridge/` directory (`vendor/proxybridge-win-4.0.0/windivert_dynamic.c`),
+  so there is no import library to generate and nothing is downloaded.
 - `musl-gcc` does not search `/usr/include` at all (its specs file replaces the
   include path), so the kernel UAPI headers need `linux-libc-dev` on
   Debian/Ubuntu; `build.rs` puts them on the include path with `-idirafter`.

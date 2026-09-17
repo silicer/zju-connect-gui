@@ -4858,7 +4858,7 @@ PROXYBRIDGE_API BOOL ProxyBridge_Start(void)
         switch (wd_err)
         {
             case 2:    // ERROR_FILE_NOT_FOUND
-                log_message("Failed to open WinDivert (%lu): WinDivert64.sys not found - it may have been quarantined or deleted by antivirus. Whitelist WinDivert64.sys and ProxyBridgeCore.dll in your AV and reinstall.", wd_err);
+                log_message("Failed to open WinDivert (%lu): WinDivert64.sys not found - it may have been quarantined or deleted by antivirus. Whitelist both WinDivert64.sys and WinDivert.dll in <exe>\\proxybridge\\ and reinstall.", wd_err);
                 break;
             case 5:    // ERROR_ACCESS_DENIED
                 log_message("Failed to open WinDivert (%lu): Access denied - make sure ProxyBridge is running as Administrator.", wd_err);
