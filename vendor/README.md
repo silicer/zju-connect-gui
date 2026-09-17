@@ -136,11 +136,14 @@ retry after a truncated answer would turn a slow lookup into a failure), and
 IPv6 DNS never reaches ProxyBridge at all, because it only installs IPv4
 netfilter rules.
 
-Only the application decides when to arm it, and it does so only after probing
-that listener: it logs `Starting DNS server at ...` *before* binding, keeps
-running when the bind fails, and answers `NOERROR` with an empty answer section
-while the tunnel is still coming up — an answer a stub resolver caches as "no
-such name".
+Only the application decides when to arm it: the switch next to the ProxyBridge
+process list (off by default, so a stock launch behaves exactly like upstream),
+and only after probing the listener — it logs `Starting DNS server at ...`
+*before* binding, keeps running when the bind fails, and answers `NOERROR` with
+an empty answer section while the tunnel is still coming up — an answer a stub
+resolver caches as "no such name". With no redirect configured, which is the
+default, the C patch is inert: `relay_dest_*` simply equals the original
+destination on every path.
 
 One thing to watch when updating upstream: PR #165 adds
 `-t mangle -A OUTPUT -o lo -j ACCEPT` so that loopback traffic never reaches

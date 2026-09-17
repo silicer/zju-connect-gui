@@ -76,6 +76,15 @@ pub struct LaunchOptions {
     /// address the listed processes' UDP DNS queries are sent to.
     #[serde(default)]
     pub dns_server_bind: String,
+    /// Opt-in: route the listed processes' UDP DNS queries through the core's
+    /// tunnel-backed resolver instead of letting the local resolver answer.
+    ///
+    /// Off by default, which keeps the upstream behaviour — including v4's
+    /// Domain Name Forwarding (the proxy re-resolves a name the machine has
+    /// already resolved). This switch is for names the local resolver cannot
+    /// resolve at all, which that mechanism cannot help with.
+    #[serde(default)]
+    pub proxybridge_dns_hijack: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
@@ -208,11 +217,15 @@ impl LaunchOptions {
     /// Whether this launch should start the core's tunnel-backed DNS server and
     /// have ProxyBridge send the listed processes' UDP DNS queries to it.
     ///
-    /// Only where the vendored C carries the `ProxyBridge_SetDnsRedirect` patch
-    /// (Linux and Windows x86_64 — see `vendor/README.md`). TUN mode already
-    /// hijacks DNS through the tunnel interface itself.
+    /// Opt-in via `proxybridge_dns_hijack`, and only where the vendored C
+    /// carries the `ProxyBridge_SetDnsRedirect` patch (Linux and Windows x86_64
+    /// — see `vendor/README.md`). TUN mode already hijacks DNS through the
+    /// tunnel interface itself, so this is proxy-only.
     pub fn dns_hijack_enabled(&self) -> bool {
-        cfg!(proxybridge_native) && !self.tun_mode && self.proxybridge_enabled
+        cfg!(proxybridge_native)
+            && !self.tun_mode
+            && self.proxybridge_enabled
+            && self.proxybridge_dns_hijack
     }
 
     pub fn build_args(&self, captcha_path: &str) -> Vec<String> {
@@ -416,21 +429,30 @@ mod tests {
     }
 
     #[test]
-    fn build_args_binds_the_tunnel_dns_server_in_proxy_mode() {
-        let opts = LaunchOptions {
+    fn build_args_binds_the_tunnel_dns_server_when_the_hijack_is_on() {
+        // Opt-in: with the switch off, nothing changes for the core or the
+        // bridge — upstream behaviour, Domain Name Forwarding included.
+        let off = LaunchOptions {
             username: "alice".into(),
             password: "p@ss".into(),
             proxybridge_enabled: true,
             ..normalize_launch_options(LaunchOptions::default())
         };
+        assert!(!off.dns_hijack_enabled());
+        assert!(!off.build_args("").iter().any(|a| a == "-dns-server-bind"));
+
+        let opts = LaunchOptions {
+            proxybridge_dns_hijack: true,
+            ..off
+        };
+        assert!(opts.dns_hijack_enabled());
         let args = opts.build_args("");
 
-        // Only Linux has the ProxyBridge entry point that can use this listener.
         if cfg!(proxybridge_native) {
             let i = args
                 .iter()
                 .position(|a| a == "-dns-server-bind")
-                .expect("proxy-only ProxyBridge should start the core DNS server");
+                .expect("the DNS hijack needs the core's own resolver");
             assert_eq!(args[i + 1], DEFAULT_DNS_SERVER_BIND);
         } else {
             assert!(!args.iter().any(|a| a == "-dns-server-bind"));
@@ -441,6 +463,7 @@ mod tests {
             tun_mode: true,
             ..opts
         };
+        assert!(!tun.dns_hijack_enabled());
         assert!(!tun.build_args("").iter().any(|a| a == "-dns-server-bind"));
     }
 

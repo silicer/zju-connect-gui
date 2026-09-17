@@ -116,14 +116,21 @@
             rows="4" placeholder="chrome.exe&#10;firefox.exe&#10;steam*.exe"
             style="font-family:monospace;font-size:0.8rem"></textarea>
         </label>
+        <label>
+          <input type="checkbox" x-model="settings.proxybridgeDnsHijack">
+          让列表进程的 DNS 也走隧道（DNS 劫持）
+        </label>
         <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
           💡 修改进程列表后，需停止并重新连接才生效
         </p>
-        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
-          💡 列表进程的 UDP DNS 查询统一交由核心的隧道内解析器处理，从而经代理解析；该解析器未就绪时退回本机解析（详见日志）
+        <p x-show="settings.proxybridgeDnsHijack" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 开启后，列表进程发往任意解析器的 UDP DNS 查询都由核心的隧道内解析器回答，本机解析不了的域名也能解析；该解析器未就绪时自动退回本机解析（详见日志）
         </p>
-        <p x-show="isWindows" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
-          💡 Windows 的域名解析由系统服务（svchost.exe）代发，因此会额外接管它 53 端口的查询——也就是所有程序的 DNS 都会经隧道解析
+        <p x-show="settings.proxybridgeDnsHijack && isWindows" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
+          ⚠️ Windows 的域名解析由系统服务（svchost.exe）代发，因此会接管它 53 端口的查询——相当于所有程序的 DNS 都经隧道解析
+        </p>
+        <p style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
+          💡 若域名在本机可以解析、只是希望交由代理重新解析，v4 自带的 Domain Name Forwarding 已经覆盖，无需开启此项
         </p>
         <p x-show="needsElevation" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限
@@ -275,6 +282,7 @@ document.addEventListener('alpine:init', () => {
       tunMode: true, debugDump: false,
       eipBrowserProgram: '', eipBrowserArgs: [],
       proxybridgeEnabled: false, proxybridgeProcesses: [...defaultProxybridgeProcesses],
+      proxybridgeDnsHijack: false,
     },
     // Raw text of the two "one entry per line" textareas. They are plain
     // fields, not x-model getter/setter pairs: x-model writes the model value
