@@ -18,7 +18,24 @@ env:
   APP_NAME: zju-connect-gui
 
 jobs:
-  # ── Linux (x86_64 native + arm64 native) ────────────────────────────
+  # ── Linux (x86_64 native + arm64 native) — static musl ──────────────
+  # Fully static musl binaries: no glibc version dependency, so one
+  # artifact runs on any Linux (musl libc is linked in, not loaded).
+  # rustup's `rust-std` for `*-linux-musl` ships a self-contained musl
+  # `libc.a` plus the crt objects, and each runner already has a native
+  # `cc`, so no musl cross toolchain is required. (`libloading` passes
+  # `-ldl`; libc6-dev's empty `libdl.a` compatibility archive satisfies
+  # that, and the `dl*` symbols themselves come from musl's `libc.a`.)
+  #
+  # ProxyBridge is deliberately NOT bundled for Linux: upstream ships a
+  # glibc shared library (`libproxybridge.so` → `NEEDED libc.so.6`) which
+  # the app loads in-process via `dlopen`, and a fully static musl binary
+  # has no dynamic loader at all — musl's `dlopen` is a stub that fails
+  # with "Dynamic loading not supported", so the library could never be
+  # loaded. Linking ProxyBridge into the binary statically is tracked
+  # separately. `zju-connect` is unaffected: upstream ships it as an
+  # already-static Go binary that is spawned as a child process, not
+  # `dlopen`ed, so it needs no musl rebuild.
   build-linux:
     name: Linux (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -26,9 +43,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
 
     steps:
@@ -45,64 +62,41 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # ── ProxyBridge: bundle the core library (no CLI needed; the app
-      #    loads `libproxybridge.so` in-process). x86_64 from release,
-      #    arm64 compiled from source. ──
-      - name: Install ProxyBridge build deps (Linux arm64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev
-
-      - name: Download ProxyBridge (Linux x86_64)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: |
-          mkdir -p target/proxybridge-dist
-          curl -fsSL -o /tmp/pb-linux.tar.gz \
-            https://github.com/InterceptSuite/ProxyBridge/releases/download/v3.2.0/ProxyBridge-Linux-v3.2.0.tar.gz
-          tar -xzf /tmp/pb-linux.tar.gz -C target/proxybridge-dist
-          # Keep only the shared library; discard CLI, GUI and setup script
-          rm -f target/proxybridge-dist/ProxyBridge target/proxybridge-dist/ProxyBridgeGUI target/proxybridge-dist/setup.sh
-          ls -la target/proxybridge-dist/
-
-      - name: Compile ProxyBridge from source (Linux arm64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          PB_TAG=v3.2.0
-          PB_COMMIT=7dd955f8e726cd113146984858ba11bf7202bff9
-          git clone --depth 1 --branch $PB_TAG https://github.com/InterceptSuite/ProxyBridge.git /tmp/pb-src
-          cd /tmp/pb-src/Linux
-          bash build.sh
-          mkdir -p $GITHUB_WORKSPACE/target/proxybridge-dist
-          cp output/libproxybridge.so $GITHUB_WORKSPACE/target/proxybridge-dist/
-          ls -la $GITHUB_WORKSPACE/target/proxybridge-dist/
-
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
 
+      # A static musl binary must have no PT_INTERP program header (else it
+      # needs a loader at run time) and no NEEDED entries. Static-PIE keeps
+      # a dynamic section for its own relocations, so checking for the
+      # interpreter alone is not enough.
+      - name: Verify static linkage
+        run: |
+          BIN=target/${{ matrix.target }}/release/${{ env.APP_NAME }}
+          file "$BIN"
+          if readelf -l "$BIN" | grep -q INTERP; then
+            echo "::error::${{ env.APP_NAME }} is dynamically linked (has PT_INTERP)"
+            exit 1
+          fi
+          if readelf -d "$BIN" | grep -q NEEDED; then
+            echo "::error::${{ env.APP_NAME }} has dynamic library dependencies"
+            readelf -d "$BIN" | grep NEEDED
+            exit 1
+          fi
+          echo "OK: ${{ env.APP_NAME }} is statically linked"
+
       - name: Package tarball
         run: |
-          ARCH=${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
+          ARCH=${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}
           mkdir dist
           cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
-
-          # Bundle the ProxyBridge shared library when available
-          if [ -f target/proxybridge-dist/libproxybridge.so ]; then
-            mkdir -p dist/proxybridge
-            cp target/proxybridge-dist/libproxybridge.so dist/proxybridge/
-            echo "ProxyBridge bundled for Linux ${ARCH}"
-          else
-            echo "ProxyBridge not bundled for Linux ${ARCH}"
-          fi
-
-          tar -czf ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz -C dist .
-          ls -lh ${{ env.APP_NAME }}-linux-${ARCH}.tar.gz
+          tar -czf ${{ env.APP_NAME }}-linux-${ARCH}-musl.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-linux-${ARCH}-musl.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}-linux-${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'x86_64' || 'arm64' }}
-          path: ${{ env.APP_NAME }}-linux-*.tar.gz
+          name: ${{ env.APP_NAME }}-linux-${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}-musl
+          path: ${{ env.APP_NAME }}-linux-*-musl.tar.gz
           if-no-files-found: error
 
   # ── Windows (x86_64 + arm64) ───────────────────────────────────────
