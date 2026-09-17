@@ -61,6 +61,11 @@ pub struct LaunchOptions {
     pub auth_type: String,
     pub login_domain: String,
     pub client_data_file: String,
+    /// Open the EIP portal automatically after the **first** successful
+    /// connection of this GUI run. The latch lives in `ProxyManager` state for
+    /// the whole process, so a later disconnect/reconnect (manual restart or
+    /// automatic retry) never reopens the portal; that is what the
+    /// "打开 EIP" button is for.
     pub eip_auto_open: bool,
     pub eip_browser_program: String,
     pub eip_browser_args: Vec<String>,

@@ -36,10 +36,20 @@ src/
     pending_connect_store.rs   gui_pending_connect.json with 5-min TTL
     relaunch_args.rs           --resume-pending-connect --wait-parent-pid=N
     paths.rs                   resolve_app_dir() = parent of current_exe
-    external_links.rs          open_eip + EIP_URL
+    external_links.rs          open_eip (opens the EIP portal in the
+                               configured browser — new window by default,
+                               OS default handler when unset; never touches
+                               the browser's proxy settings) + EIP_URL
+    browser_detect.rs          installed-browser detection (Windows registry
+                               StartMenuInternet + known paths, unix PATH
+                               scan) + native file-picker dialog (PowerShell
+                               / zenity / kdialog / yad / osascript)
     proxy/                     supervisor + helpers
       manager.rs               ProxyManager, supervise_child task,
-                               retry/readiness/eip-open generation logic
+                               retry/readiness/eip-open generation logic.
+                               The automatic EIP open is latched once per GUI
+                               run (`eip_opened`), never re-armed by a
+                               reconnect
       proxybridge.rs           ProxyBridge C API binding, statically linked on
                                Linux and Windows x86_64 (macOS/Windows arm64
                                stubbed out; upstream's DLL is no longer used)
@@ -65,7 +75,8 @@ src/
                                endpoint with BroadcastStream
     handlers.rs                REST handlers: /api/settings, /api/start,
                                /api/stop, /api/submit-input, /api/elevate,
-                               /api/status
+                               /api/status, /api/browsers,
+                               /api/select-browser-file, /api/open-eip
     bridge.rs                  WebUiBridge: implements UiBridge trait, converts
                                ProxyEvent → SseEvent → broadcast send
     assets.rs                  include_str!-embedded frontend files
@@ -126,6 +137,9 @@ vendor/                        C sources compiled into the binary by build.rs
 | POST | `/api/submit-input` | Submit SMS/callback input or captcha coordinates (`value` + optional `kind`) |
 | POST | `/api/elevate` | Trigger elevation flow (Windows only; no-op signal on other OSes) |
 | GET | `/api/status` | Snapshot of current proxy state |
+| GET | `/api/browsers` | List locally installed browsers (name/path/chrome-firefox kind) |
+| POST | `/api/select-browser-file` | Open a native file-picker dialog; returns `{path}` or `{path: null}` on cancel; 409 while a dialog is already open |
+| POST | `/api/open-eip` | Open the EIP portal in the browser; an optional `{options}` body (the UI's live settings) overrides the settings store, so a freshly picked browser applies without reconnecting; no session required |
 | GET | `/api/events` | SSE stream: log, state, need_input, need_captcha, error |
 | GET | `/` | Serve index.html |
 | GET | `/static/{path}` | Serve embedded static files |
@@ -142,7 +156,6 @@ cargo test --all-targets
 
 ## What's deferred (intentionally)
 
-- Native file picker for the EIP browser path (manual paste only)
 - macOS validation (compiles, not exercised on CI)
 
 ## Known build pitfalls

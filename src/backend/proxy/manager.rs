@@ -139,7 +139,7 @@ fn default_eip_auto_open_delay() -> Duration {
 }
 
 fn default_eip_opener(options: &LaunchOptions) -> Result<(), OpenEipError> {
-    open_eip(&options.eip_browser_program, &options.eip_browser_args)
+    open_eip(options)
 }
 
 #[derive(Debug, Error)]
@@ -196,6 +196,11 @@ struct State {
     captcha_poll_handle: Option<JoinHandle<()>>,
     captcha_path: PathBuf,
     eip_options: LaunchOptions,
+    /// One-shot latch for the automatic EIP open: it flips to `true` only after
+    /// the browser was actually launched and is **never** cleared again for the
+    /// lifetime of this GUI process. The portal therefore opens at most once —
+    /// at the first successful connection — and neither a manual stop/restart
+    /// nor an automatic retry may arm it a second time.
     eip_opened: bool,
     last_options: LaunchOptions,
     ready: bool,
@@ -409,7 +414,9 @@ impl ProxyManager {
             let mut state = self.inner.state.lock().expect("state mutex poisoned");
             state.captcha_path = captcha_path.clone();
             state.eip_options = options.clone();
-            state.eip_opened = false;
+            // Note: eip_opened is deliberately NOT reset here. The automatic
+            // open happens once per GUI process, not once per connection, so
+            // stopping and connecting again must not reopen the portal.
             state.last_options = options.clone();
             state.ready = false;
             state.ready_wait_gen = 0;
@@ -647,6 +654,21 @@ impl ProxyManager {
             awaiting: s.awaiting.clone(),
             child_pid: s.child_pid,
         }
+    }
+
+    /// Open the EIP portal on demand (the "打开 EIP" button). Independent of
+    /// the session state: the caller resolves `options` from the current
+    /// settings, so the button works before a connection even exists.
+    pub fn open_eip_manual(&self, options: &LaunchOptions) -> Result<(), OpenEipError> {
+        self.inner.emit_log("[eip] manual EIP open requested");
+        let result = (self.inner.config.eip_opener)(options);
+        match &result {
+            Ok(()) => self.inner.emit_log("[eip] EIP page opened"),
+            Err(err) => self
+                .inner
+                .emit_log(format!("[eip] failed to open EIP URL: {err}")),
+        }
+        result
     }
 }
 
@@ -1100,22 +1122,20 @@ fn decide_exit_action(state: &mut State, generation: u64) -> ExitAction {
     state.cancel_delayed_eip();
     state.cancel_captcha_poll();
     state.ready = false;
+    // `eip_opened` is never cleared here: the automatic EIP open is a
+    // once-per-GUI-process event, so neither a stop, nor an awaiting block, nor
+    // an automatic reconnect may arm it again.
     if !state.session_active {
-        state.eip_opened = false;
         state.ready_wait_gen = 0;
         state.retry_attempt = 0;
         ExitAction::EmitStopped
     } else if let Some(reason) = state.awaiting.clone() {
         state.session_active = false;
         state.awaiting = None;
-        state.eip_opened = false;
         state.ready_wait_gen = 0;
         state.retry_attempt = 0;
         ExitAction::AwaitingBlocked(reason)
     } else {
-        // Deliberately do NOT reset eip_opened here: the EIP browser opens
-        // once per *manual* session, and an automatic reconnect must not spawn
-        // a fresh browser tab. (start() resets it for manual sessions.)
         state.retry_generation = state.retry_generation.wrapping_add(1);
         ExitAction::ScheduleRetry
     }
@@ -1185,9 +1205,8 @@ async fn run_retry_attempt(inner: Arc<Inner>, generation: u64) {
         let mut state = inner.state.lock().expect("state mutex poisoned");
         state.captcha_path = captcha_path.clone();
         state.eip_options = options.clone();
-        // Note: eip_opened is deliberately NOT reset here. The EIP browser
-        // opens once per *manual* session (start()); auto-reconnects must not
-        // spawn a fresh browser tab each time.
+        // Note: eip_opened is deliberately NOT reset here either — the
+        // automatic open is once per GUI process, not once per reconnect.
     }
     if let Err(err) = manager.spawn_child(options, captcha_path, generation) {
         if matches!(err, StartError::SessionStopped) {
@@ -1492,7 +1511,9 @@ mod tests {
     }
 
     #[test]
-    fn exit_action_stopped_resets_eip_opened() {
+    fn exit_action_stopped_preserves_eip_opened() {
+        // The automatic open is once per GUI process: stopping the session must
+        // not re-arm it for the next connect.
         let mut state = state_with_session(1);
         state.session_active = false;
         state.eip_opened = true;
@@ -1500,7 +1521,90 @@ mod tests {
             decide_exit_action(&mut state, 1),
             ExitAction::EmitStopped
         ));
-        assert!(!state.eip_opened);
+        assert!(state.eip_opened);
+    }
+
+    #[test]
+    fn exit_action_awaiting_blocked_preserves_eip_opened() {
+        let mut state = state_with_session(1);
+        state.awaiting = Some("sms".into());
+        state.eip_opened = true;
+        assert!(matches!(
+            decide_exit_action(&mut state, 1),
+            ExitAction::AwaitingBlocked(_)
+        ));
+        assert!(state.eip_opened);
+    }
+
+    #[test]
+    fn manual_restart_does_not_rearm_the_automatic_eip_open() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = ProxyManager::new(PathBuf::from("/tmp"), rt.handle().clone());
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.eip_opened = true;
+        }
+        // The start fails (no zju-connect binary under /tmp), but start()'s
+        // state-reset path has already run by then — and it must leave the
+        // latch alone so a stop/connect cycle never reopens the portal.
+        let options = LaunchOptions {
+            username: "u".into(),
+            password: "p".into(),
+            tun_mode: false,
+            ..LaunchOptions::default()
+        };
+        assert!(manager.start(options).is_err());
+        assert!(manager.inner.state.lock().unwrap().eip_opened);
+    }
+
+    /// A manager whose child is freshly spawned (ready to flip to Connected),
+    /// with the automatic EIP open switch in the requested position. The opener
+    /// is a no-op so a test can never launch a real browser.
+    fn session_awaiting_readiness(eip_auto_open: bool) -> (tokio::runtime::Runtime, ProxyManager) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cfg = ProxyManagerConfig {
+            eip_opener: Arc::new(|_options: &LaunchOptions| Ok(())),
+            ..ProxyManagerConfig::default()
+        };
+        let manager = ProxyManager::with_config(PathBuf::from("/tmp"), rt.handle().clone(), cfg);
+        {
+            let mut state = manager.inner.state.lock().unwrap();
+            state.session_active = true;
+            state.retry_generation = 7;
+            state.ready_wait_gen = 7;
+            state.eip_options = LaunchOptions {
+                eip_auto_open,
+                ..LaunchOptions::default()
+            };
+        }
+        (rt, manager)
+    }
+
+    #[test]
+    fn auto_open_switch_gates_the_delayed_eip_open() {
+        // Switch off: reaching Connected must not schedule the open at all.
+        let (_rt, manager) = session_awaiting_readiness(false);
+        mark_ready(manager.inner.clone(), 7);
+        {
+            let state = manager.inner.state.lock().unwrap();
+            assert!(state.ready);
+            assert!(
+                state.delayed_eip.is_none(),
+                "switch off must not schedule an EIP open"
+            );
+        }
+
+        // Switch on (the same path, so the check above cannot pass vacuously).
+        let (_rt, manager) = session_awaiting_readiness(true);
+        mark_ready(manager.inner.clone(), 7);
+        {
+            let state = manager.inner.state.lock().unwrap();
+            assert!(state.ready);
+            assert!(
+                state.delayed_eip.is_some(),
+                "switch on must schedule an EIP open"
+            );
+        }
     }
 
     #[test]
@@ -1603,6 +1707,46 @@ mod tests {
         // Kind matches, but there is no child → NotRunning (kind check passed).
         let err = manager.submit_input("1234", Some("sms")).unwrap_err();
         assert!(matches!(err, SubmitInputError::NotRunning), "got {err:?}");
+    }
+
+    #[test]
+    fn open_eip_manual_forwards_options_and_reports_errors() {
+        use std::sync::Mutex as StdMutex;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let seen: Arc<StdMutex<Vec<LaunchOptions>>> = Arc::new(StdMutex::new(Vec::new()));
+        let seen_for_opener = seen.clone();
+        let cfg = ProxyManagerConfig {
+            eip_opener: Arc::new(move |options: &LaunchOptions| {
+                seen_for_opener.lock().unwrap().push(options.clone());
+                // Second call simulates a launcher failure.
+                if seen_for_opener.lock().unwrap().len() > 1 {
+                    Err(OpenEipError::Spawn(std::io::Error::other("boom")))
+                } else {
+                    Ok(())
+                }
+            }),
+            ..ProxyManagerConfig::default()
+        };
+        let manager = ProxyManager::with_config(PathBuf::from("/tmp"), rt.handle().clone(), cfg);
+        // No session at all: the manual open must still work.
+        let options = LaunchOptions {
+            tun_mode: false,
+            eip_browser_program: "/usr/bin/firefox".into(),
+            ..LaunchOptions::default()
+        };
+
+        manager
+            .open_eip_manual(&options)
+            .expect("first open succeeds");
+        let opened = seen.lock().unwrap();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].eip_browser_program, "/usr/bin/firefox");
+        drop(opened);
+
+        // Opener failures surface to the caller (and into the log stream).
+        let err = manager.open_eip_manual(&options).unwrap_err();
+        assert!(matches!(err, OpenEipError::Spawn(_)), "got {err:?}");
     }
 
     #[derive(Clone, Default)]
