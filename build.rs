@@ -64,6 +64,13 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/app.rc");
     println!("cargo:rerun-if-changed=assets/gemini.ico");
 
+    // Windows/MSVC only (a no-op on every other target): link the VCRuntime
+    // statically while leaving the Universal CRT dynamic. The UCRT is part of
+    // Windows 10+, but `vcruntime140.dll` ships with the VC++ Redistributable —
+    // this keeps the release zip independent of it without paying the size cost
+    // (and the UCRT pinning) of a fully static CRT.
+    static_vcruntime::metabuild();
+
     match env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("windows") => embed_resource::compile("assets/app.rc", embed_resource::NONE),
         // macOS: upstream ships no reusable core library, so the integration is

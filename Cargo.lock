@@ -1788,6 +1788,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "static_vcruntime"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2790,6 +2796,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "static_vcruntime",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

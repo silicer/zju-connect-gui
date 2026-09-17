@@ -41,6 +41,14 @@ Any Linux build compiles the vendored C in `vendor/` (ProxyBridge and its netfil
 dependencies) into the binary, so a C compiler is required. For a `*-linux-musl` target that
 compiler must target musl — see `vendor/README.md`.
 
+### Windows release builds
+
+The official Windows artifacts link the VCRuntime **statically** while leaving the Universal
+CRT dynamic (`static_vcruntime` in `build.rs`). The UCRT is a component of Windows 10+, but
+`vcruntime140.dll` ships with the VC++ Redistributable — so the released `.exe` runs on a stock
+Windows install with no prerequisites. Only the optional ProxyBridge support needs the bundled
+`proxybridge/` directory next to it (and admin rights, for the WinDivert driver).
+
 ### Cross-compile from Linux to Windows
 
 ```sh

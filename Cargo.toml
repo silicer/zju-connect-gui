@@ -55,6 +55,9 @@ tokio = { version = "1", features = ["test-util", "macros", "rt"] }
 embed-resource = "2"
 # Compiles the vendored ProxyBridge / netfilter C stack on Linux.
 cc = "1"
+# Windows/MSVC only: links the VCRuntime statically while leaving the Universal
+# CRT dynamic, so the release zip does not need the VC++ Redistributable.
+static_vcruntime = "3"
 
 
 
