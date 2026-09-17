@@ -26,6 +26,21 @@ MSVC linker). The project uses the `x86_64-pc-windows-gnullvm` toolchain as a wo
 requires MinGW-w64 installed. See `.cargo/config.toml` for linker configuration. macOS and Linux
 builds are unaffected.
 
+### Static musl release builds (Linux)
+
+The official Linux artifacts are built as fully static musl binaries, so they run on any
+distribution regardless of its glibc version:
+
+```sh
+sudo apt install musl-tools   # provides musl-gcc
+CC_x86_64_unknown_linux_musl=musl-gcc \
+  cargo build --release --target x86_64-unknown-linux-musl
+```
+
+Any Linux build compiles the vendored C in `vendor/` (ProxyBridge and its netfilter
+dependencies) into the binary, so a C compiler is required. For a `*-linux-musl` target that
+compiler must target musl — see `vendor/README.md`.
+
 ### Cross-compile from Linux to Windows
 
 ```sh
@@ -116,4 +131,9 @@ scripts/                     build_linux_appimage.sh
 
 ## License
 
-MIT.
+MIT for this repository's own code.
+
+The Linux release artifacts also link in two GPL-2.0 libraries (`libnetfilter_queue`,
+`libnfnetlink`) and one LGPL-2.1 library (`libmnl`) as part of the ProxyBridge integration, so
+those binaries as a whole are distributed under GPL-2.0. Their sources and license texts are kept
+in `vendor/` — see `vendor/README.md`.

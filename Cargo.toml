@@ -18,7 +18,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
 base64 = "0.22"
-libloading = "0.8"
 rand = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
@@ -33,6 +32,9 @@ nix = { version = "0.29", default-features = false, features = ["signal"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+# Loads the bundled ProxyBridgeCore.dll. Linux has no runtime loader for this:
+# the stack is compiled into the binary by build.rs instead (see vendor/).
+libloading = "0.8"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -51,6 +53,8 @@ tokio = { version = "1", features = ["test-util", "macros", "rt"] }
 
 [build-dependencies]
 embed-resource = "2"
+# Compiles the vendored ProxyBridge / netfilter C stack on Linux.
+cc = "1"
 
 
 

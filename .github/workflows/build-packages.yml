@@ -22,20 +22,27 @@ jobs:
   # Fully static musl binaries: no glibc version dependency, so one
   # artifact runs on any Linux (musl libc is linked in, not loaded).
   # rustup's `rust-std` for `*-linux-musl` ships a self-contained musl
-  # `libc.a` plus the crt objects, and each runner already has a native
-  # `cc`, so no musl cross toolchain is required. (`libloading` passes
-  # `-ldl`; libc6-dev's empty `libdl.a` compatibility archive satisfies
-  # that, and the `dl*` symbols themselves come from musl's `libc.a`.)
+  # `libc.a` plus the crt objects, so the build needs no musl *cross*
+  # toolchain on these native runners.
   #
-  # ProxyBridge is deliberately NOT bundled for Linux: upstream ships a
-  # glibc shared library (`libproxybridge.so` → `NEEDED libc.so.6`) which
-  # the app loads in-process via `dlopen`, and a fully static musl binary
-  # has no dynamic loader at all — musl's `dlopen` is a stub that fails
-  # with "Dynamic loading not supported", so the library could never be
-  # loaded. Linking ProxyBridge into the binary statically is tracked
-  # separately. `zju-connect` is unaffected: upstream ships it as an
-  # already-static Go binary that is spawned as a child process, not
-  # `dlopen`ed, so it needs no musl rebuild.
+  # `build.rs` compiles `vendor/` — ProxyBridge plus its netfilter stack —
+  # into the binary rather than `dlopen`ing upstream's `libproxybridge.so`:
+  # a fully static musl binary has no dynamic loader at all (musl's `dlopen`
+  # is a stub that fails with "Dynamic loading not supported"), so a shared
+  # library could never be loaded there.
+  #
+  # That C must be compiled against musl: the default `cc` emits glibc-only
+  # references such as `__ctype_b_loc`, which musl does not provide, and the
+  # final link then fails. Hence `musl-gcc` from `musl-tools`.
+  #
+  # `libnetfilter_queue` and `libnfnetlink` are GPL-2.0 and `libmnl` is
+  # LGPL-2.1, all linked in statically, so the Linux binary as a whole is
+  # GPL-2.0. Their license texts are shipped inside the tarball; see
+  # vendor/README.md for provenance.
+  #
+  # `zju-connect` is unaffected: upstream ships it as an already-static Go
+  # binary that is spawned as a child process, not `dlopen`ed, so it needs
+  # no musl rebuild.
   build-linux:
     name: Linux (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -45,8 +52,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
+            cc: musl-gcc
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+            cc: musl-gcc
 
     steps:
       - name: Checkout
@@ -57,12 +66,26 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install musl C toolchain
+        run: |
+          sudo apt-get update -y
+          # musl-tools provides musl-gcc. linux-libc-dev provides the kernel UAPI
+          # headers (<linux/*.h>, <asm/*.h>) that the vendored netfilter sources
+          # include and that musl itself does not ship; build.rs puts them on
+          # musl-gcc's include path, which its specs file otherwise excludes.
+          sudo apt-get install -y musl-tools linux-libc-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
+      # Point the vendored C compiler at musl. Without this, `cc` (glibc)
+      # produces objects that cannot link into a musl binary.
       - name: cargo build --release
+        env:
+          CC_x86_64_unknown_linux_musl: ${{ matrix.cc }}
+          CC_aarch64_unknown_linux_musl: ${{ matrix.cc }}
         run: cargo build --release --target ${{ matrix.target }}
 
       # A static musl binary must have no PT_INTERP program header (else it
@@ -87,8 +110,18 @@ jobs:
       - name: Package tarball
         run: |
           ARCH=${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}
-          mkdir dist
+          mkdir -p dist/licenses
           cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
+
+          # The binary statically links GPL-2.0 / LGPL-2.1 libraries, so the
+          # license texts have to travel with it. Provenance, versions and the
+          # one local patch are documented in vendor/README.md.
+          cp vendor/proxybridge-3.2.0/LICENSE               dist/licenses/proxybridge-MIT.txt
+          cp vendor/libnetfilter_queue-1.0.5/COPYING        dist/licenses/libnetfilter_queue-GPL-2.0.txt
+          cp vendor/libnfnetlink-1.0.2/COPYING              dist/licenses/libnfnetlink-GPL-2.0.txt
+          cp vendor/libmnl-1.0.5/COPYING                    dist/licenses/libmnl-LGPL-2.1.txt
+          cp vendor/README.md                               dist/licenses/THIRD-PARTY.md
+
           tar -czf ${{ env.APP_NAME }}-linux-${ARCH}-musl.tar.gz -C dist .
           ls -lh ${{ env.APP_NAME }}-linux-${ARCH}-musl.tar.gz
 

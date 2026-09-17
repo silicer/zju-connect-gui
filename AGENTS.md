@@ -40,8 +40,9 @@ src/
     proxy/                     supervisor + helpers
       manager.rs               ProxyManager, supervise_child task,
                                retry/readiness/eip-open generation logic
-      proxybridge.rs           in-process libproxybridge.so / ProxyBridgeCore.dll
-                               binding (dlopen + C API; macOS stubbed out)
+      proxybridge.rs           ProxyBridge C API binding: Windows dlopens
+                               ProxyBridgeCore.dll, Linux links the vendored
+                               stack in statically (macOS stubbed out)
       windivert.rs             WinDivert kernel driver ensure/install/start
                                (Windows only, no-op elsewhere)
       logs.rs                  chunked stream reader + prompt detection
@@ -80,6 +81,10 @@ web/
     pico.min.css               Pico.css v2
 tests/
   proxy_manager.rs             integration tests with shell-script mock binary
+vendor/                        C sources compiled into the Linux binary by
+                               build.rs (ProxyBridge + its netfilter stack).
+                               Provenance, licensing and the local patches
+                               are documented in vendor/README.md
 ```
 
 ## Adding a new launch_options field
@@ -141,3 +146,11 @@ cargo test --all-targets
   with `link.exe` from coreutils (a Unix hard-link tool). Build with
   `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnullvm` instead. Requires
   MinGW-w64 (e.g. `scoop install mingw-mstorsjo-llvm-ucrt`).
+- On Linux, `build.rs` compiles the vendored C in `vendor/` into the binary, so
+  a C compiler is required. For a `*-linux-musl` target it must target musl
+  (`CC_<triple>=musl-gcc`, i.e. `musl-tools`): the default host `cc` emits
+  glibc-only references such as `__ctype_b_loc`, and the link fails. `zig cc`
+  also works but needs a wrapper — see the header of `build.rs`.
+- `musl-gcc` does not search `/usr/include` at all (its specs file replaces the
+  include path), so the kernel UAPI headers need `linux-libc-dev` on
+  Debian/Ubuntu; `build.rs` puts them on the include path with `-idirafter`.

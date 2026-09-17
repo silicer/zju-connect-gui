@@ -1,18 +1,27 @@
-//! ProxyBridge integration – in-process library binding.
+//! ProxyBridge integration – Proxifier-like kernel-level interception.
 //!
-//! ProxyBridge (github.com/InterceptSuite/ProxyBridge) is a cross-platform
-//! Proxifier-like tool that intercepts traffic at the kernel level (WinDivert
-//! on Windows, NFQUEUE on Linux) and routes it through SOCKS5 / HTTP proxies.
+//! ProxyBridge (github.com/InterceptSuite/ProxyBridge) intercepts traffic at
+//! the kernel level (WinDivert on Windows, NFQUEUE on Linux) and routes it
+//! through SOCKS5 / HTTP proxies.
 //!
 //! Instead of shelling out to a CLI (whose option sets differ wildly between
-//! the Linux and Windows builds), we load the core library directly
-//! (`libproxybridge.so` / `ProxyBridgeCore.dll`) and drive its C API — the
-//! same way the official GUI does. This gives us:
+//! the Linux and Windows builds), we drive its C API directly — the same way
+//! the official GUI does. This gives us:
 //!
 //! - graceful start/stop (no orphaned child processes, no stale iptables
 //!   rules left behind by a SIGKILL);
 //! - log lines via the library's callback, forwarded into our log stream;
 //! - no CLI-argument compatibility problems.
+//!
+//! How that C API is reached differs per platform:
+//!
+//! - **Windows** loads the bundled `ProxyBridgeCore.dll` at run time through
+//!   `libloading`.
+//! - **Linux** links the vendored stack in `vendor/` in at build time
+//!   (`build.rs` compiles it into the binary). Run-time loading is simply not
+//!   available to the release build: it is a fully static musl binary, which
+//!   has no dynamic loader at all — musl's `dlopen` is a stub that always
+//!   fails with "Dynamic loading not supported".
 //!
 //! macOS is intentionally **not** supported: upstream ships no reusable
 //! library or CLI for macOS (only a Swift GUI + Network Extension), so the
@@ -24,19 +33,17 @@ use tokio::sync::mpsc;
 
 use crate::backend::launch_options::LaunchOptions;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 use libloading::{Library, Symbol};
 #[cfg(not(target_os = "macos"))]
 use std::ffi::{c_char, CStr, CString};
 #[cfg(not(target_os = "macos"))]
 use std::sync::{Mutex, OnceLock};
 
-/// Name of the ProxyBridge core library on the current platform.
+/// Name of the ProxyBridge core library. Windows only: on Linux the stack is
+/// linked into this executable and there is no library file at run time.
 #[cfg(target_os = "windows")]
 pub const PB_LIB_NAME: &str = "ProxyBridgeCore.dll";
-
-#[cfg(target_os = "linux")]
-pub const PB_LIB_NAME: &str = "libproxybridge.so";
 
 // ── C API types (see upstream `src/ProxyBridge.h`) ────────────────────
 
@@ -84,7 +91,7 @@ fn set_log_tx(tx: mpsc::UnboundedSender<String>) {
 
 /// Resolve a single exported symbol; `*sym` copies the (copyable) value out
 /// of the `Symbol` so the struct doesn't borrow the `Library`.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 unsafe fn get_sym<T: Copy>(lib: &Library, name: &[u8]) -> Result<T, String> {
     let sym: Symbol<T> = unsafe { lib.get(name) }
         .map_err(|e| format!("symbol {} missing: {e}", String::from_utf8_lossy(name)))?;
@@ -92,6 +99,31 @@ unsafe fn get_sym<T: Copy>(lib: &Library, name: &[u8]) -> Result<T, String> {
 }
 
 // ── Platform-specific bindings ────────────────────────────────────────
+
+// Linux: the vendored stack is linked into this executable, so the symbols
+// below are ordinary link-time imports. `Bindings` deliberately mirrors the
+// Windows one so the call sites further down need no `cfg` of their own.
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn ProxyBridge_SetProxyConfig(
+        proxy_type: i32,
+        proxy_ip: *const c_char,
+        proxy_port: u16,
+        username: *const c_char,
+        password: *const c_char,
+    );
+    fn ProxyBridge_AddRule(
+        process_name: *const c_char,
+        target_hosts: *const c_char,
+        target_ports: *const c_char,
+        protocol: i32,
+        action: i32,
+    ) -> u32;
+    fn ProxyBridge_SetDnsViaProxy(enable: u8);
+    fn ProxyBridge_SetLogCallback(callback: Option<LogCallback>);
+    fn ProxyBridge_Start() -> u8;
+    fn ProxyBridge_Stop() -> u8;
+}
 
 #[cfg(target_os = "linux")]
 struct Bindings {
@@ -103,18 +135,17 @@ struct Bindings {
     stop: unsafe extern "C" fn() -> u8,
 }
 
+/// Statically linked, so every symbol resolves at link time and nothing here
+/// can fail — unlike the Windows `dlopen` path.
 #[cfg(target_os = "linux")]
-unsafe fn bind_symbols(lib: &Library) -> Result<Bindings, String> {
-    // C `bool` is a 1-byte _Bool; model it as u8 on the Rust side.
-    unsafe {
-        Ok(Bindings {
-            set_proxy_config: get_sym(lib, b"ProxyBridge_SetProxyConfig\0")?,
-            add_rule: get_sym(lib, b"ProxyBridge_AddRule\0")?,
-            set_dns_via_proxy: get_sym(lib, b"ProxyBridge_SetDnsViaProxy\0")?,
-            set_log_callback: get_sym(lib, b"ProxyBridge_SetLogCallback\0")?,
-            start: get_sym(lib, b"ProxyBridge_Start\0")?,
-            stop: get_sym(lib, b"ProxyBridge_Stop\0")?,
-        })
+fn bind_symbols() -> Bindings {
+    Bindings {
+        set_proxy_config: ProxyBridge_SetProxyConfig,
+        add_rule: ProxyBridge_AddRule,
+        set_dns_via_proxy: ProxyBridge_SetDnsViaProxy,
+        set_log_callback: ProxyBridge_SetLogCallback,
+        start: ProxyBridge_Start,
+        stop: ProxyBridge_Stop,
     }
 }
 
@@ -154,12 +185,14 @@ unsafe fn bind_symbols(lib: &Library) -> Result<Bindings, String> {
     }
 }
 
-/// A loaded ProxyBridge core library with its resolved symbols.
+/// A ProxyBridge core that is ready to be driven.
 ///
-/// Holds the `Library` alive for as long as the session lives; all calls are
+/// On Windows this owns the loaded `ProxyBridgeCore.dll`; on Linux the stack is
+/// part of this executable, so there is nothing to keep alive. All calls are
 /// safe to make from any thread (the library spawns its own worker threads).
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(not(target_os = "macos"))]
 pub struct ProxyBridge {
+    #[cfg(target_os = "windows")]
     _lib: Library,
     b: Bindings,
 }
@@ -168,7 +201,7 @@ pub struct ProxyBridge {
 /// this, Windows only reports the unhelpful `"LoadLibraryExW failed"` and
 /// hides whether the real cause was `ERROR_MOD_NOT_FOUND` (126),
 /// `ERROR_BAD_EXE_FORMAT` (193), etc.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "windows")]
 fn format_libloading_error(err: libloading::Error) -> String {
     let mut text = err.to_string();
     let mut source = std::error::Error::source(&err);
@@ -213,39 +246,44 @@ unsafe fn load_core_library(path: Option<&Path>) -> Result<Library, String> {
     Ok(os_lib.into())
 }
 
-#[cfg(target_os = "linux")]
-unsafe fn load_core_library(path: Option<&Path>) -> Result<Library, String> {
-    let lib = match path {
-        Some(p) => unsafe { Library::new(p) },
-        None => unsafe { Library::new(PB_LIB_NAME) },
-    };
-    lib.map_err(|e| {
-        format!(
-            "failed to load {PB_LIB_NAME}: {}",
-            format_libloading_error(e)
-        )
-    })
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(not(target_os = "macos"))]
 impl ProxyBridge {
-    /// Load the library and resolve its symbols.
+    /// Prepare the ProxyBridge core.
     ///
-    /// `path` may be a concrete path, or `None` to fall back to the OS loader
-    /// search (PATH / DLL search dirs on Windows, ldconfig cache on Linux).
+    /// On Windows `path` may be a concrete DLL path, or `None` to fall back to
+    /// the OS loader search (PATH / DLL search dirs). On Linux the stack is
+    /// linked into this executable, so `path` is ignored and this cannot fail.
     pub fn load(
         path: Option<&Path>,
         log_tx: mpsc::UnboundedSender<String>,
     ) -> Result<Self, String> {
-        let lib = unsafe { load_core_library(path) }?;
-        let b = unsafe { bind_symbols(&lib) }?;
-        // Install the log sink *before* registering the callback so no early
-        // log lines are dropped.
-        set_log_tx(log_tx);
-        unsafe {
-            (b.set_log_callback)(Some(on_pb_log));
+        #[cfg(target_os = "linux")]
+        {
+            // The vendored stack is already part of this binary (see
+            // `build.rs`); there is no library to locate at run time.
+            let _ = path;
+            let b = bind_symbols();
+            // Install the log sink *before* registering the callback so no
+            // early log lines are dropped.
+            set_log_tx(log_tx);
+            unsafe {
+                (b.set_log_callback)(Some(on_pb_log));
+            }
+            Ok(Self { b })
         }
-        Ok(Self { _lib: lib, b })
+
+        #[cfg(target_os = "windows")]
+        {
+            let lib = unsafe { load_core_library(path) }?;
+            let b = unsafe { bind_symbols(&lib) }?;
+            // Install the log sink *before* registering the callback so no
+            // early log lines are dropped.
+            set_log_tx(log_tx);
+            unsafe {
+                (b.set_log_callback)(Some(on_pb_log));
+            }
+            Ok(Self { _lib: lib, b })
+        }
     }
 
     /// Configure the SOCKS proxy + per-process rules and start interception.
@@ -322,9 +360,6 @@ impl ProxyBridge {
             (self.b.set_localhost_via_proxy)(0);
         }
 
-        #[cfg(target_os = "linux")]
-        let ok = unsafe { (self.b.start)() != 0 };
-        #[cfg(target_os = "windows")]
         let ok = unsafe { (self.b.start)() != 0 };
         if !ok {
             return Err(
@@ -337,11 +372,6 @@ impl ProxyBridge {
 
     /// Stop interception (the library removes its iptables / WinDivert rules).
     pub fn stop(&self) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            (self.b.stop)();
-        }
-        #[cfg(target_os = "windows")]
         unsafe {
             (self.b.stop)();
         }
@@ -394,22 +424,16 @@ fn default_install_dirs() -> Vec<PathBuf> {
     ]
 }
 
-#[cfg(target_os = "linux")]
-fn default_install_dirs() -> Vec<PathBuf> {
-    vec![PathBuf::from("/usr/local/lib"), PathBuf::from("/usr/lib")]
-}
-
-/// Locate the ProxyBridge core library.
+/// Locate the ProxyBridge core library (Windows only).
 ///
 /// Resolution order:
-/// 1. User-supplied `proxybridge_path` (pointing at the directory or the lib).
+/// 1. User-supplied `proxybridge_path` (pointing at the directory or the DLL).
 /// 2. Bundled library in `<app_dir>/proxybridge/` (CI builds).
 /// 3. Well-known install directories (e.g. `C:\Program Files\ProxyBridge`).
 ///
 /// Returns `None` when no usable file was found; `ProxyBridge::load(None)`
-/// then falls back to the OS loader search (PATH on Windows, ldconfig on
-/// Linux).
-#[cfg(not(target_os = "macos"))]
+/// then falls back to the OS loader search (PATH).
+#[cfg(target_os = "windows")]
 pub fn find_proxybridge_library(user_path: Option<&str>, app_dir: &Path) -> Option<PathBuf> {
     if let Some(user) = user_path {
         let p = Path::new(user);
@@ -448,13 +472,25 @@ pub fn find_proxybridge_library(user_path: Option<&str>, app_dir: &Path) -> Opti
     None
 }
 
+/// Linux has nothing to locate: the stack is linked into this executable by
+/// `build.rs`, so the `proxybridge_path` setting is ignored.
+#[cfg(target_os = "linux")]
+pub fn find_proxybridge_library(user_path: Option<&str>, _app_dir: &Path) -> Option<PathBuf> {
+    if user_path.is_some_and(|p| !p.trim().is_empty()) {
+        log::debug!(
+            "proxybridge_path is ignored: ProxyBridge is linked into this binary statically"
+        );
+    }
+    None
+}
+
 #[cfg(target_os = "macos")]
 pub fn find_proxybridge_library(_user_path: Option<&str>, _app_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Returns a platform-specific hint for installing ProxyBridge, including
-/// the official download URL. Used in UI prompts and log messages.
+/// Returns a platform-specific hint explaining why ProxyBridge could not be
+/// started, including the official download URL where one is still needed.
 #[cfg(not(target_os = "macos"))]
 pub fn install_hint() -> &'static str {
     #[cfg(target_os = "windows")]
@@ -465,8 +501,8 @@ pub fn install_hint() -> &'static str {
     }
     #[cfg(target_os = "linux")]
     {
-        "Install ProxyBridge (libnetfilter-queue + root required) from \
-         https://interceptsuite.com/download/proxybridge, or bundle it next to this app."
+        "ProxyBridge is built into this binary. Starting it requires root and a \
+         kernel with NFQUEUE support (nfnetlink_queue)."
     }
 }
 
@@ -504,6 +540,38 @@ mod tests {
         assert_eq!(extract_host_port("127.0.0.1"), ("127.0.0.1", 1080));
         assert_eq!(extract_host_port(":1080"), ("", 1080));
         assert_eq!(extract_host_port("[::1]:1080"), ("::1", 1080));
+    }
+
+    /// On Linux the vendored C stack is linked into the binary rather than
+    /// `dlopen`ed, so this walks the whole path: statically linked symbol →
+    /// C `log_message` → our `extern "C"` callback → the log channel. It fails
+    /// at link time if the archive ever stops being linked in, and at run time
+    /// if the callback wiring breaks.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linked_c_api_logs_through_the_callback() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let pb = ProxyBridge::load(None, tx).expect("a statically linked core always loads");
+
+        let process = CString::new("zju-connect-gui-test").expect("no NUL in the name");
+        let any = CString::new("*").expect("no NUL in the pattern");
+        unsafe {
+            (pb.b.add_rule)(
+                process.as_ptr(),
+                any.as_ptr(),
+                any.as_ptr(),
+                RULE_PROTOCOL_TCP,
+                RULE_ACTION_PROXY,
+            );
+        }
+
+        let line = rx
+            .try_recv()
+            .expect("ProxyBridge_AddRule should log the rule it just added");
+        assert!(
+            line.contains("added rule id"),
+            "unexpected log line: {line}"
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
