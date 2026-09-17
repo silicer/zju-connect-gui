@@ -63,6 +63,32 @@ bash scripts/build_linux_appimage.sh
 # → zju-connect-gui-x86_64.AppImage
 ```
 
+## Release packages
+
+`build-packages.yml` publishes one archive per platform (`.tar.gz` for Linux and
+macOS, `.zip` for Windows). Every one of them unpacks to the same shape, with the
+GUI at the root and the `zju-connect` core in `bin/` — the exact relative path the
+GUI launches, so extracting the archive is all the setup there is:
+
+```
+zju-connect-gui          # zju-connect-gui.exe on Windows
+bin/zju-connect          # bin\zju-connect.exe on Windows
+```
+
+The core is the matching asset from the latest
+[Mythologyli/zju-connect](https://github.com/Mythologyli/zju-connect) release
+(`linux-amd64`/`linux-arm64`, `windows-amd64`/`windows-arm64`,
+`darwin-arm64`), fetched at build time; the build log prints the tag it used.
+
+Windows x86_64 additionally ships `proxybridge/` (`ProxyBridgeCore.dll`,
+`WinDivert.dll`, `WinDivert64.sys`). That optional feature installs the signed
+WinDivert driver as a kernel service the first time it runs, which needs
+administrator rights. Windows arm64 has no `proxybridge/` — there is no ARM64
+WinDivert driver, and the x64 core cannot load into an arm64 process.
+
+The archives contain only the binaries. The sources and licence texts for the
+libraries linked into them live in `vendor/` and are not redistributed.
+
 ## Layout
 
 ```

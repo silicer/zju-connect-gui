@@ -53,9 +53,13 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             cc: musl-gcc
+            arch: x86_64
+            core: zju-connect-linux-amd64.zip
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             cc: musl-gcc
+            arch: arm64
+            core: zju-connect-linux-arm64.zip
 
     steps:
       - name: Checkout
@@ -107,29 +111,49 @@ jobs:
           fi
           echo "OK: ${{ env.APP_NAME }} is statically linked"
 
+      - name: Download zju-connect core
+        env:
+          ASSET: ${{ matrix.core }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The GUI launches `<app_dir>/bin/zju-connect`, so ship the core next to
+          # it, ready to run. Resolve the tag first (authenticated, so no API rate
+          # limit) and download *by tag* rather than via `latest/download`, so the
+          # version reported in the log is the one actually packaged.
+          tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/Mythologyli/zju-connect/releases/latest \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+          test -n "$tag" || { echo "::error::cannot resolve the zju-connect release tag"; exit 1; }
+          echo "zju-connect core: $tag ($ASSET)"
+          curl -fsSL -o core.zip \
+            "https://github.com/Mythologyli/zju-connect/releases/download/$tag/$ASSET"
+          unzip -o -q core.zip -d core
+          rm -f core.zip
+          chmod +x core/zju-connect
+
       - name: Package tarball
         run: |
-          ARCH=${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}
-          mkdir -p dist/licenses
+          # Layout: the GUI at the root, the core in `bin/` -- the path the app
+          # launches. See "Release packages" in README.md.
+          mkdir -p dist/bin
           cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} dist/
+          install -m 0755 core/zju-connect dist/bin/zju-connect
 
-          # The binary statically links GPL-2.0 / LGPL-2.1 libraries, so the
-          # license texts have to travel with it. Provenance, versions and the
-          # one local patch are documented in vendor/README.md.
-          cp vendor/proxybridge-3.2.0/LICENSE               dist/licenses/proxybridge-MIT.txt
-          cp vendor/libnetfilter_queue-1.0.5/COPYING        dist/licenses/libnetfilter_queue-GPL-2.0.txt
-          cp vendor/libnfnetlink-1.0.2/COPYING              dist/licenses/libnfnetlink-GPL-2.0.txt
-          cp vendor/libmnl-1.0.5/COPYING                    dist/licenses/libmnl-LGPL-2.1.txt
-          cp vendor/README.md                               dist/licenses/THIRD-PARTY.md
+          tar -czf ${{ env.APP_NAME }}-linux-${{ matrix.arch }}-musl.tar.gz -C dist .
+          ls -lh ${{ env.APP_NAME }}-linux-${{ matrix.arch }}-musl.tar.gz
 
-          tar -czf ${{ env.APP_NAME }}-linux-${ARCH}-musl.tar.gz -C dist .
-          ls -lh ${{ env.APP_NAME }}-linux-${ARCH}-musl.tar.gz
-
+      # `archive: false` uploads the tarball as-is rather than zipping it again.
+      # That is also a correctness matter: a zipped artifact loses file modes,
+      # and both binaries in here are meant to be executable. With this option
+      # the artifact is named after the file, so `name:` would be ignored.
+      # Caveat: `gh run download` assumes every artifact is a zip and fails on
+      # these ("not a valid zip file"); use the web UI, or
+      # `gh api .../actions/artifacts/<id>/zip`, which returns the raw file.
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}-linux-${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}-musl
-          path: ${{ env.APP_NAME }}-linux-*-musl.tar.gz
+          path: ${{ env.APP_NAME }}-linux-${{ matrix.arch }}-musl.tar.gz
+          archive: false
           if-no-files-found: error
 
   # ── Windows (x86_64 + arm64) ───────────────────────────────────────
@@ -142,8 +166,12 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             os: windows-2022
+            arch: x86_64
+            core: zju-connect-windows-amd64.zip
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
+            arch: arm64
+            core: zju-connect-windows-arm64.zip
 
     steps:
       - name: Checkout
@@ -186,31 +214,50 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Download zju-connect core
+        shell: pwsh
+        env:
+          ASSET: ${{ matrix.core }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The GUI launches `<app_dir>\bin\zju-connect.exe`, so ship the core
+          # next to it, ready to run. Resolve the tag first (authenticated, so no
+          # API rate limit) and download *by tag* rather than via
+          # `latest/download`, so the version reported in the log is the one
+          # actually packaged.
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $tag = (Invoke-RestMethod -Uri 'https://api.github.com/repos/Mythologyli/zju-connect/releases/latest' -Headers $headers).tag_name
+          if (-not $tag) { Write-Error 'cannot resolve the zju-connect release tag'; exit 1 }
+          Write-Host "zju-connect core: $tag ($env:ASSET)"
+          Invoke-WebRequest -Uri "https://github.com/Mythologyli/zju-connect/releases/download/$tag/$env:ASSET" -OutFile core.zip
+          Expand-Archive -Path core.zip -DestinationPath core -Force
+          Remove-Item core.zip
+
       - name: Package artifact
         shell: pwsh
         run: |
-          $ARCH = if ('${{ matrix.target }}' -like '*aarch64*') { 'arm64' } else { 'x86_64' }
-          New-Item -ItemType Directory -Force -Path dist
+          New-Item -ItemType Directory -Force -Path dist, dist\bin | Out-Null
           Copy-Item target\${{ matrix.target }}\release\${{ env.APP_NAME }}.exe dist\
+          Copy-Item core\zju-connect.exe dist\bin\zju-connect.exe
 
           # Bundle ProxyBridge when available (x86_64 only)
           if (Test-Path target\proxybridge-dist\ProxyBridgeCore.dll) {
-            New-Item -ItemType Directory -Force -Path dist\proxybridge
+            New-Item -ItemType Directory -Force -Path dist\proxybridge | Out-Null
             Copy-Item target\proxybridge-dist\* dist\proxybridge\
-            Write-Host "ProxyBridge bundled for Windows ${ARCH}"
+            Write-Host "ProxyBridge bundled for Windows ${{ matrix.arch }}"
           } else {
-            Write-Host "ProxyBridge not bundled for Windows ${ARCH}"
+            Write-Host "ProxyBridge not bundled for Windows ${{ matrix.arch }}"
           }
 
-          # Create zip
-          Compress-Archive -Path dist\* -DestinationPath ${{ env.APP_NAME }}-windows-${ARCH}.zip
-          Get-ChildItem ${{ env.APP_NAME }}-windows-${ARCH}.zip
+          Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
 
+      # `upload-artifact` zips `dist` once. Pre-zipping it here (as this job used
+      # to) would nest a second archive inside the artifact.
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}-windows-${{ contains(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}
-          path: ${{ env.APP_NAME }}-windows-*.zip
+          name: ${{ env.APP_NAME }}-windows-${{ matrix.arch }}
+          path: dist
           if-no-files-found: error
 
   # ── macOS (arm64 only) ──────────────────────────────────────────────
@@ -236,16 +283,45 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --target aarch64-apple-darwin
 
+      - name: Download zju-connect core
+        env:
+          ASSET: zju-connect-darwin-arm64.zip
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The GUI launches `<app_dir>/bin/zju-connect`, so ship the core next to
+          # it, ready to run. Resolve the tag first (authenticated, so no API rate
+          # limit) and download *by tag* rather than via `latest/download`, so the
+          # version reported in the log is the one actually packaged.
+          tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/Mythologyli/zju-connect/releases/latest \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+          test -n "$tag" || { echo "::error::cannot resolve the zju-connect release tag"; exit 1; }
+          echo "zju-connect core: $tag ($ASSET)"
+          curl -fsSL -o core.zip \
+            "https://github.com/Mythologyli/zju-connect/releases/download/$tag/$ASSET"
+          unzip -o -q core.zip -d core
+          rm -f core.zip
+          chmod +x core/zju-connect
+
       - name: Package tarball
         run: |
-          mkdir dist
+          mkdir -p dist/bin
           cp target/aarch64-apple-darwin/release/${{ env.APP_NAME }} dist/
+          install -m 0755 core/zju-connect dist/bin/zju-connect
+
           tar -czf ${{ env.APP_NAME }}-macos-arm64.tar.gz -C dist .
           ls -lh ${{ env.APP_NAME }}-macos-arm64.tar.gz
 
+      # `archive: false` uploads the tarball as-is rather than zipping it again.
+      # That is also a correctness matter: a zipped artifact loses file modes,
+      # and both binaries in here are meant to be executable. With this option
+      # the artifact is named after the file, so `name:` would be ignored.
+      # Caveat: `gh run download` assumes every artifact is a zip and fails on
+      # these ("not a valid zip file"); use the web UI, or
+      # `gh api .../actions/artifacts/<id>/zip`, which returns the raw file.
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}-macos-arm64
-          path: ${{ env.APP_NAME }}-macos-*.tar.gz
+          path: ${{ env.APP_NAME }}-macos-arm64.tar.gz
+          archive: false
           if-no-files-found: error
