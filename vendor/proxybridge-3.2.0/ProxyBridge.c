@@ -193,11 +193,11 @@ static char g_proxy_username[256] = "";
 static char g_proxy_password[256] = "";
 static bool g_dns_via_proxy = true;
 
-// Local patch (see vendor/README.md): address that rule-matched DNS queries
-// aimed at a loopback stub resolver are sent to instead of being forced direct.
-// Zero (the default) keeps upstream behaviour. A loopback destination cannot be
-// resolved from the far side of the proxy, so without this the query is always
-// answered by the local machine's own resolver.
+// Local patch (see vendor/README.md): address that rule-matched UDP DNS queries
+// are sent to instead of being resolved by whichever resolver the process was
+// pointed at. Zero (the default) keeps upstream behaviour. The SOCKS5 UDP relay
+// dials a destination it cannot reach through the tunnel with a plain local
+// socket, so without this a proxied lookup is answered on the local network.
 static uint32_t g_dns_redirect_ip = 0;
 static uint16_t g_dns_redirect_port = 0;
 static uint32_t g_proxy_ip_cached = 0; // Cached resolved proxy IP
@@ -795,15 +795,14 @@ static bool is_broadcast_or_multicast(uint32_t ip)
     return false;
 }
 
-// Local patch (see vendor/README.md): is this a DNS query that has to be sent
-// somewhere else to be useful? Only loopback destinations qualify - they are
-// unroutable from the proxy's far side, so a proxied query would either be
-// resolved on the wrong network or dropped.
-static bool dns_redirect_applies(uint32_t dest_ip, uint16_t dest_port)
+// Local patch (see vendor/README.md): is this a rule-matched UDP DNS query that
+// the configured resolver should answer? Every destination qualifies, so a
+// listed process resolves through the proxy however it was configured: a
+// loopback resolver is unroutable from the proxy's far side, and any other one
+// would be dialled on the local machine by the SOCKS5 server.
+static bool dns_redirect_applies(uint16_t dest_port)
 {
-    if (g_dns_redirect_ip == 0 || dest_port != 53)
-        return false;
-    return ((dest_ip >> 0) & 0xFF) == 127; // 127.0.0.0/8, as stored in the header
+    return g_dns_redirect_ip != 0 && dest_port == 53;
 }
 
 static RuleAction match_rule(const char *process_name, uint32_t dest_ip, uint16_t dest_port, bool is_udp)
@@ -1935,11 +1934,12 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
         else
             action = check_process_rule(src_ip, src_port, dest_ip, dest_port, true, &pid);
 
-        // Local patch (see vendor/README.md): a DNS query to a loopback resolver
-        // is proxied after all, so that it can be redirected below; every other
-        // loopback flow stays direct (the proxy's own listeners live there).
+        // Local patch (see vendor/README.md): a DNS query is proxied after all,
+        // so that it can be redirected to the configured resolver below; every
+        // other broadcast / multicast / loopback flow stays direct (the proxy's
+        // own listeners live on loopback).
         if (action == RULE_ACTION_PROXY && is_broadcast_or_multicast(dest_ip)
-            && !dns_redirect_applies(dest_ip, dest_port))
+            && !dns_redirect_applies(dest_port))
             action = RULE_ACTION_DIRECT;
 
         if (action == RULE_ACTION_PROXY && (dest_port == 67 || dest_port == 68))
@@ -2005,7 +2005,7 @@ static int packet_callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, stru
             // answer from the resolver it originally queried.
             uint32_t conn_dest_ip = dest_ip;
             uint16_t conn_dest_port = dest_port;
-            if (dns_redirect_applies(dest_ip, dest_port))
+            if (dns_redirect_applies(dest_port))
             {
                 conn_dest_ip = g_dns_redirect_ip;
                 conn_dest_port = g_dns_redirect_port;

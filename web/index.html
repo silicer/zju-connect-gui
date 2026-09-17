@@ -120,7 +120,7 @@
           💡 修改进程列表后，需停止并重新连接才生效
         </p>
         <p x-show="!isWindows" style="font-size:0.75rem;color:var(--pico-muted-color);margin-top:0.3rem">
-          💡 列表进程发往本机回环解析器（如 systemd-resolved 的 127.0.0.53）的 DNS 查询会转发给核心的隧道内解析器，从而经代理解析；该解析器未就绪时退回本机解析（详见日志）
+          💡 列表进程的 UDP DNS 查询（含发往 systemd-resolved 127.0.0.53 等本机解析器的）统一交由核心的隧道内解析器处理，从而经代理解析；该解析器未就绪时退回本机解析（详见日志）
         </p>
         <p x-show="needsElevation" style="font-size:0.75rem;color:#f59e0b;margin-top:0.3rem">
           ⚠️ 此功能需要管理员/root 权限

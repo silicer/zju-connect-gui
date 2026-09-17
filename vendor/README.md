@@ -93,25 +93,30 @@ cannot leave anything behind.
 
 ### 3. Tunnel-resolved DNS for the listed processes
 
-Upstream forces every destination in `127.0.0.0/8` to `RULE_ACTION_DIRECT` once a
-rule has matched (`is_broadcast_or_multicast`), so a listed process's DNS query
-to a loopback stub resolver — systemd-resolved's `127.0.0.53`, a local
-`dnsmasq` — is always answered by the local machine. Proxying it unchanged would
-not help either: the SOCKS5 UDP relay puts the *original* destination in the
-SOCKS5 request, and zju-connect dials a destination it cannot reach through the
-tunnel with a plain local socket (`dial/dialer_proxy.go`), so the query would
-simply reach the same local resolver.
+Proxying DNS as upstream does cannot put a listed process's lookup into the
+tunnel. The SOCKS5 UDP relay puts the *original* destination in the SOCKS5
+request, and zju-connect dials a destination it cannot reach through the tunnel
+with a plain local socket (`dial/dialer_proxy.go`), so the query is answered on
+the local network — and the unconditional `127.0.0.0/8` exemption in
+`is_broadcast_or_multicast` sends a query aimed at a loopback stub resolver
+(systemd-resolved's `127.0.0.53`, a local `dnsmasq`) direct before the proxy path
+is even considered.
 
 The patch adds `ProxyBridge_SetDnsRedirect(const char *ip, int port)`. For a
-rule-matched **UDP port 53** packet whose destination is loopback, the
-connection table records that address instead of the original one, so the relay
-asks the SOCKS5 server for it and the reply is matched back to the client —
-which still sees an answer from the resolver it originally queried (the
-iptables `REDIRECT` keeps the conntrack reverse mapping). With no redirect
-configured, which is the default, nothing changes. TCP port 53 is deliberately
-left alone: the DNS server this targets (the core's `-dns-server-bind` listener)
-is UDP-only, and redirecting the TCP retry after a truncated answer would only
-turn a slow lookup into a failure.
+rule-matched **UDP port 53** packet, the connection table records that address
+instead of the original destination, so the relay asks the SOCKS5 server for it
+and the reply is matched back to the client — which still sees an answer from
+the resolver it originally queried (the iptables `REDIRECT` keeps the conntrack
+reverse mapping). Every destination is replaced, not just loopback ones: the
+point is that a listed process resolves through the proxy whatever resolver it
+was configured with. With no redirect configured, which is the default, nothing
+changes.
+
+Two deliberate limits: TCP port 53 is left alone (the DNS server this targets —
+the core's `-dns-server-bind` listener — is UDP-only, and redirecting the TCP
+retry after a truncated answer would turn a slow lookup into a failure), and
+IPv6 DNS never reaches ProxyBridge at all, because it only installs IPv4
+netfilter rules.
 
 Only the application decides when to arm it, and it does so only after probing
 that listener: it logs `Starting DNS server at ...` *before* binding, keeps

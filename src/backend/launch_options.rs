@@ -8,8 +8,8 @@ pub const DEFAULT_SOCKS_BIND: &str = "127.0.0.1:1080";
 pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8888";
 pub const DEFAULT_SECONDARY_DNS_SERVER: &str = "223.5.5.5";
 /// Loopback address of the core's tunnel-backed DNS server in proxy-only mode.
-/// ProxyBridge redirects the listed processes' loopback DNS queries to it; it
-/// is never bound beyond 127.0.0.0/8 (see `parse_loopback_addr`).
+/// ProxyBridge sends the listed processes' UDP DNS queries to it; it is never
+/// bound beyond 127.0.0.0/8 (see `parse_loopback_addr`).
 pub const DEFAULT_DNS_SERVER_BIND: &str = "127.0.0.1:15353";
 pub const DEFAULT_AUTH_TYPE: &str = "auth/psw";
 pub const DEFAULT_LOGIN_DOMAIN: &str = "AD";
@@ -73,7 +73,7 @@ pub struct LaunchOptions {
     #[serde(default)]
     pub proxybridge_path: Option<String>,
     /// `host:port` the core's DNS server listens on in proxy-only mode, and the
-    /// address ProxyBridge redirects the listed processes' loopback DNS to.
+    /// address the listed processes' UDP DNS queries are sent to.
     #[serde(default)]
     pub dns_server_bind: String,
 }
@@ -206,7 +206,7 @@ impl LaunchOptions {
     }
 
     /// Whether this launch should start the core's tunnel-backed DNS server and
-    /// have ProxyBridge send the listed processes' loopback DNS queries to it.
+    /// have ProxyBridge send the listed processes' UDP DNS queries to it.
     ///
     /// Linux only: it needs the `ProxyBridge_SetDnsRedirect` entry point, which
     /// is a local patch to the vendored C sources this build compiles in — the
@@ -258,8 +258,8 @@ impl LaunchOptions {
             // In proxy-only mode the SOCKS5 UDP relay dials unmatched
             // destinations on the local machine, so proxied DNS resolves
             // locally. The core's own DNS server is the one resolver that
-            // answers through the tunnel, so start it and let ProxyBridge
-            // redirect the listed processes' loopback DNS queries to it.
+            // answers through the tunnel, so start it and let ProxyBridge send
+            // the listed processes' UDP DNS queries to it.
             args.push("-dns-server-bind".into());
             args.push(self.dns_server_bind.clone());
         }

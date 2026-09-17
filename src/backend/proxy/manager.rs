@@ -1318,14 +1318,14 @@ fn start_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
 }
 
 /// Linux only: hand the C library the address of the core's own DNS server, so
-/// that a listed process's DNS query aimed at a loopback stub resolver
-/// (systemd-resolved's 127.0.0.53, a local dnsmasq, ...) is answered through the
-/// tunnel instead of by the local machine.
+/// that a listed process's UDP DNS queries are answered through the tunnel
+/// instead of by whichever resolver the process was pointed at
+/// (systemd-resolved's 127.0.0.53, a public DNS, ...).
 ///
 /// This is the only way to get tunnel-resolved DNS for a listed process: the
 /// core's SOCKS5 UDP relay dials destinations it cannot reach through the
 /// tunnel with a plain local socket, so proxying the query would just re-reach
-/// the local resolver.
+/// a local resolver.
 ///
 /// The redirect is armed only once the server demonstrably answers a real
 /// query. The core logs `Starting DNS server at ...` *before* binding, keeps
@@ -1365,7 +1365,7 @@ fn setup_dns_hijack(inner: &Arc<Inner>, options: &LaunchOptions) {
 
     if ready {
         inner.emit_log(format!(
-            "[proxybridge] DNS hijack enabled: loopback DNS queries of the listed processes go to {}",
+            "[proxybridge] DNS hijack enabled: UDP DNS queries of the listed processes go to {}",
             options.dns_server_bind
         ));
     } else {

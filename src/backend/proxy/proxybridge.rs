@@ -388,8 +388,8 @@ impl ProxyBridge {
         }
     }
 
-    /// Send the listed processes' DNS queries aimed at a loopback resolver to
-    /// `server` instead of letting them be answered locally.
+    /// Send the listed processes' UDP DNS queries to `server` instead of letting
+    /// them be answered by whichever resolver the process was pointed at.
     ///
     /// Linux only, and only meaningful with a core started on
     /// `-dns-server-bind`: the C entry point is a local patch to the vendored
