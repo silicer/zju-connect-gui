@@ -45,9 +45,9 @@ const DLL_FILE_NAME: &str = "WinDivert.dll";
 /// 2. Service installed but stopped → start it and wait for RUNNING.
 /// 3. Not installed → copy the bundled driver (`<app_dir>/proxybridge/`)
 ///    into `System32\drivers`, register a kernel service, start it. The
-///    user-mode `WinDivert.dll` is copied next to our own exe so that
-///    `ProxyBridgeCore.dll` can resolve it when loaded from the bundled
-///    `proxybridge/` directory (the loader searches the exe directory first).
+///    user-mode `WinDivert.dll` is copied next to our own exe, which is where
+///    the loader looks for it when the statically linked core calls into
+///    WinDivert.
 ///
 /// Fails with a descriptive error when the driver is missing and cannot be
 /// obtained, or the service cannot be manipulated (e.g. not elevated).
@@ -89,8 +89,8 @@ fn install_driver(scm: SC_HANDLE, app_dir: &Path) -> Result<(), String> {
     std::fs::copy(&sys_src, &sys_dest)
         .map_err(|e| format!("failed to install driver file into System32\\drivers: {e}"))?;
 
-    // 2) Copy WinDivert.dll next to our exe so ProxyBridgeCore.dll (loaded
-    //    from the bundled proxybridge/ dir) can resolve it.
+    // 2) Copy WinDivert.dll next to our exe, where the loader finds it when the
+    //    statically linked core calls WinDivert.
     let dll_src = bundled_dir.join(DLL_FILE_NAME);
     if dll_src.is_file() {
         if let Err(e) = std::fs::copy(&dll_src, app_dir.join(DLL_FILE_NAME)) {

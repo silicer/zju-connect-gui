@@ -5,8 +5,10 @@ Third-party C sources that are compiled into the Linux binary by `build.rs`
 rather than fetched at build time so that a plain `cargo build` works offline,
 and so the exact bytes that go into a release are reviewable in the repository.
 
-Nothing here is used on Windows or macOS: Windows loads the prebuilt
-`ProxyBridgeCore.dll`, and macOS is not supported at all.
+Everything here is compiled into the shipped binaries at build time: the Linux
+tree on Linux, the Windows tree on Windows x86_64. macOS is not supported at
+all, and Windows arm64 has no ProxyBridge core either — upstream ships no
+WinDivert build for it.
 
 ## Why this is vendored instead of loaded at run time
 
@@ -22,13 +24,17 @@ binary.
 | Directory | Upstream | Version | License |
 | --- | --- | --- | --- |
 | `proxybridge-3.2.0/` | https://github.com/InterceptSuite/ProxyBridge (`Linux/src/`) | v3.2.0 | MIT |
+| `proxybridge-win-4.0.0/` | https://github.com/InterceptSuite/ProxyBridge (`Windows/src/`) | v4.0.0 | MIT |
+| `windivert-2.2.2-A/` | https://reqrypt.org/windivert.html | 2.2.2-A | LGPL-3.0 / GPL-2.0 |
 | `libnetfilter_queue-1.0.5/` | https://www.netfilter.org/projects/libnetfilter_queue/ | 1.0.5 | GPL-2.0 |
 | `libnfnetlink-1.0.2/` | https://www.netfilter.org/projects/libnfnetlink/ | 1.0.2 | GPL-2.0 |
 | `libmnl-1.0.5/` | https://www.netfilter.org/projects/libmnl/ | 1.0.5 | LGPL-2.1 |
 
 Each directory keeps upstream's `COPYING`/`LICENSE` next to the sources. Only
 the files this build needs are kept (the `.c` sources and the headers they
-include); autotools files, tests and documentation were dropped.
+include); autotools files, tests and documentation were dropped. The Windows
+tree also keeps upstream's `compile.ps1`, as the reference for the compiler and
+linker flags its DLL is normally built with; we do not run it.
 
 `libnetfilter_queue` needs `libnfnetlink` and `libmnl`; `libmnl` needs none of
 them. `libnfnetlink` is included because 1.0.5 genuinely calls `nfnl_*`
@@ -46,10 +52,22 @@ Anyone redistributing a Linux build must therefore ship the corresponding
 source — which is precisely what this directory is — along with the license
 texts.
 
+`windivert-2.2.2-A/` is a different case: WinDivert is dual-licensed
+**LGPL-3.0 or GPL-2.0**, and only its header (`windivert.h`) and its export
+list (`windivert.def`) are vendored — enough to compile and link against the
+DLL. `WinDivert.dll` and the signed `WinDivert64.sys` driver are still the
+upstream binaries, redistributed untouched in the Windows package and loaded
+dynamically, which is what the LGPL asks for.
+
 ## Local patches to upstream code
 
-`proxybridge-3.2.0/ProxyBridge.c` carries three changes, each marked with a
-comment at the site.
+Two vendored trees are patched locally, each change marked with a comment at the
+site: the Linux core `proxybridge-3.2.0/ProxyBridge.c`, and the Windows core
+`proxybridge-win-4.0.0/`. The sections below keep their numbering per tree.
+
+### Linux core: `proxybridge-3.2.0/ProxyBridge.c`
+
+It carries three changes.
 
 ### 1. Portable `struct msghdr` initialization
 
@@ -129,11 +147,56 @@ One thing to watch when updating upstream: PR #165 adds
 NFQUEUE. That shortcut would make this patch a no-op (the packet path only runs
 for queued packets), so it must not be re-applied ahead of it.
 
+### Windows core: `proxybridge-win-4.0.0/`
+
+It carries two changes. Upstream ships a prebuilt `ProxyBridgeCore.dll`; this
+repository compiles the same source into the executable instead (see
+`build.rs`), so the patches below are simply available at link time. WinDivert
+is untouched and stays the upstream DLL.
+
+#### 1. `__forceinline` under GCC and clang
+
+mingw-w64 defines `__forceinline` as
+`extern __inline__ __attribute__((__always_inline__,__gnu_inline__))`, which
+cannot be combined with `static` ("multiple storage classes in declaration
+specifiers"). MSVC, which upstream builds the DLL with, treats it as a
+qualifier that does combine. The patch redefines it to plain `__inline__` for
+GCC/clang only, so both toolchains compile the file.
+
+#### 2. Tunnel-resolved DNS for the listed processes
+
+Same problem as on Linux, with one difference: Windows has no `conntrack`, so
+the reply cannot be left to a NAT layer.
+
+Upstream records the client's destination in its connection table and asks the
+SOCKS5 server for exactly that address, while zju-connect dials a destination it
+cannot reach through the tunnel on the local machine — a lookup the local
+resolver cannot answer therefore never reaches the tunnel.
+
+The patch adds `ProxyBridge_SetDnsRedirect(const char *ip, int port)`. A
+rule-matched **UDP port 53** flow gets a second destination
+(`relay_dest_ip/port`) which is what the relay asks the SOCKS5 server for, while
+`orig_dest_ip/port` keeps labelling the reply injected back to the client — that
+is the address the client's socket expects to see. IPv6 flows are not
+redirected: the SOCKS5 request is `ATYP_IPV4`.
+
+One Windows-specific consequence: the resolver does not run inside the
+requesting process, so a browser's rule never matches its own lookups — they are
+emitted by the shared DNS Client service (`svchost.exe`). When the hijack is
+enabled the application therefore adds a port-53-only rule for `svchost.exe`,
+which makes DNS system-wide while ProxyBridge runs. That is unavoidable with a
+shared resolver, and it is still scoped: only port 53 of that host process is
+captured.
+
 ## Updating
 
 1. Download the new upstream release, drop in the sources and license, and
    delete the version you are replacing (keep the directory names in `build.rs`
-   in sync).
-2. Re-apply the three patches described above if upstream has not fixed them.
-3. Rebuild for Linux and make sure the release binary is still static:
-   `file` must report `statically linked`, with no `PT_INTERP`.
+   in sync). The two cores live in separate upstream directories: `Linux/src/`
+   and `Windows/src/`.
+2. Re-apply the patches described above if upstream has not fixed them.
+3. Rebuild and check both artefacts: on Linux `file` must still report
+   `statically linked` with no `PT_INTERP`, and on Windows the executable must
+   import `WinDivert.dll` but **not** `ProxyBridgeCore.dll` — the core is inside
+   it. `x86_64-w64-mingw32-objdump -p zju-connect-gui.exe | grep "DLL Name"`
+   shows this in one line.

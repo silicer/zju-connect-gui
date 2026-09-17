@@ -80,11 +80,13 @@ The core is the matching asset from the latest
 (`linux-amd64`/`linux-arm64`, `windows-amd64`/`windows-arm64`,
 `darwin-arm64`), fetched at build time; the build log prints the tag it used.
 
-Windows x86_64 additionally ships `proxybridge/` (`ProxyBridgeCore.dll`,
-`WinDivert.dll`, `WinDivert64.sys`). That optional feature installs the signed
-WinDivert driver as a kernel service the first time it runs, which needs
-administrator rights. Windows arm64 has no `proxybridge/` — there is no ARM64
-WinDivert driver, and the x64 core cannot load into an arm64 process.
+Windows x86_64 additionally ships `proxybridge/` (`WinDivert.dll`,
+`WinDivert64.sys`). ProxyBridge itself is compiled into the executable from the
+vendored source in `vendor/proxybridge-win-4.0.0/`, so no core DLL ships or is
+loaded at run time. That optional feature installs the signed WinDivert driver
+as a kernel service the first time it runs, which needs administrator rights.
+Windows arm64 has no `proxybridge/` — there is no ARM64 WinDivert driver, so the
+feature is unavailable there.
 
 The archives contain only the binaries. The sources and licence texts for the
 libraries linked into them live in `vendor/` and are not redistributed.

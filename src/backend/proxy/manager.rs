@@ -3,7 +3,7 @@ use crate::backend::launch_options::LaunchOptions;
 use crate::backend::proxy::captcha::{
     encode_captcha, monitor_captcha_file, poll_for_stable_captcha,
 };
-#[cfg(target_os = "linux")]
+#[cfg(proxybridge_native)]
 use crate::backend::proxy::dns_probe;
 use crate::backend::proxy::logs::{
     classify_prompt, consume_stream, is_route_added, is_vpn_started, DetectedPrompt,
@@ -35,7 +35,7 @@ const CAPTCHA_FILE_NAME: &str = "gui_captcha.png";
 /// How long to wait for the core's DNS server to answer a real query before
 /// giving up on hijacking DNS through it. The core starts that listener
 /// asynchronously and, until the tunnel is usable, answers empty NOERROR.
-#[cfg(target_os = "linux")]
+#[cfg(proxybridge_native)]
 const DNS_PROBE_BUDGET: Duration = Duration::from_secs(5);
 
 /// Events the proxy manager emits to the UI side. The UI converts these into Slint
@@ -1313,7 +1313,7 @@ fn start_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
     }
     inner.emit_log("[proxybridge] started".to_string());
 
-    #[cfg(target_os = "linux")]
+    #[cfg(proxybridge_native)]
     setup_dns_hijack(&inner, &options);
 }
 
@@ -1332,7 +1332,7 @@ fn start_proxybridge(inner: Arc<Inner>, options: LaunchOptions) {
 /// running when the bind fails, and replies NOERROR with an empty answer
 /// section (never SERVFAIL) while the tunnel is coming up — a stub resolver
 /// caches that as "no such name", which is worse than not redirecting at all.
-#[cfg(target_os = "linux")]
+#[cfg(proxybridge_native)]
 fn setup_dns_hijack(inner: &Arc<Inner>, options: &LaunchOptions) {
     if !options.dns_hijack_enabled() {
         return;

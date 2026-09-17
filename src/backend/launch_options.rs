@@ -208,12 +208,11 @@ impl LaunchOptions {
     /// Whether this launch should start the core's tunnel-backed DNS server and
     /// have ProxyBridge send the listed processes' UDP DNS queries to it.
     ///
-    /// Linux only: it needs the `ProxyBridge_SetDnsRedirect` entry point, which
-    /// is a local patch to the vendored C sources this build compiles in — the
-    /// Windows build loads a prebuilt DLL that has no such API. TUN mode already
+    /// Only where the vendored C carries the `ProxyBridge_SetDnsRedirect` patch
+    /// (Linux and Windows x86_64 — see `vendor/README.md`). TUN mode already
     /// hijacks DNS through the tunnel interface itself.
     pub fn dns_hijack_enabled(&self) -> bool {
-        cfg!(target_os = "linux") && !self.tun_mode && self.proxybridge_enabled
+        cfg!(proxybridge_native) && !self.tun_mode && self.proxybridge_enabled
     }
 
     pub fn build_args(&self, captcha_path: &str) -> Vec<String> {
@@ -427,7 +426,7 @@ mod tests {
         let args = opts.build_args("");
 
         // Only Linux has the ProxyBridge entry point that can use this listener.
-        if cfg!(target_os = "linux") {
+        if cfg!(proxybridge_native) {
             let i = args
                 .iter()
                 .position(|a| a == "-dns-server-bind")
