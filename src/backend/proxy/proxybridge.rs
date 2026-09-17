@@ -51,8 +51,14 @@ pub const PB_LIB_NAME: &str = "ProxyBridgeCore.dll";
 #[cfg(not(target_os = "macos"))]
 const PROXY_TYPE_SOCKS5: i32 = 1;
 /// `RuleProtocol` enum in the C header.
+///
+/// Rules must cover UDP as well as TCP. The library's `match_rule` skips a
+/// TCP-only rule for UDP packets, so a TCP-only rule sends every UDP flow of a
+/// listed process — DNS on port 53 included — straight out instead of through
+/// the proxy. That is also what made DNS look un-hijacked: ProxyBridge only
+/// routes port 53 via the SOCKS5 UDP relay when a rule matches the packet.
 #[cfg(not(target_os = "macos"))]
-const RULE_PROTOCOL_TCP: i32 = 0;
+const RULE_PROTOCOL_BOTH: i32 = 2;
 /// `RuleAction` enum in the C header.
 #[cfg(not(target_os = "macos"))]
 const RULE_ACTION_PROXY: i32 = 0;
@@ -153,17 +159,13 @@ fn bind_symbols() -> Bindings {
 struct Bindings {
     add_proxy_config:
         unsafe extern "C" fn(i32, *const c_char, u16, *const c_char, *const c_char) -> u32,
-    // Bound with the master-branch signature (includes `target_domains`);
-    // calling an older 6-arg build with an extra argument is harmless on x64.
-    add_rule: unsafe extern "C" fn(
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        *const c_char,
-        i32,
-        i32,
-        u32,
-    ) -> u32,
+    // Signature of the pinned v4.0.0 build (`build-packages.yml` downloads
+    // `ProxyBridge-Setup-4.0.0.exe`): no `target_domains` parameter, which only
+    // exists on post-4.0.0 master. It must be declared exactly — passing the
+    // extra pointer would shift `protocol` and `action` into the wrong
+    // registers rather than being harmlessly ignored.
+    add_rule:
+        unsafe extern "C" fn(*const c_char, *const c_char, *const c_char, i32, i32, u32) -> u32,
     set_localhost_via_proxy: unsafe extern "C" fn(i32),
     set_log_callback: unsafe extern "C" fn(Option<LogCallback>),
     start: unsafe extern "C" fn() -> i32,
@@ -297,6 +299,9 @@ impl ProxyBridge {
 
         #[cfg(target_os = "linux")]
         {
+            // Route DNS (port 53) through the proxy as well; without this the
+            // library lets lookups from the listed processes go direct even
+            // when a rule matches them.
             unsafe {
                 (self.b.set_proxy_config)(
                     PROXY_TYPE_SOCKS5,
@@ -309,6 +314,9 @@ impl ProxyBridge {
             }
         }
 
+        // The pinned v4.0.0 Windows core has no `ProxyBridge_SetDnsViaProxy`
+        // (that setter only exists on post-4.0.0 master); there DNS via proxy
+        // is on by default, so binding it is neither possible nor needed.
         #[cfg(target_os = "windows")]
         let proxy_config_id = unsafe {
             (self.b.add_proxy_config)(
@@ -322,8 +330,6 @@ impl ProxyBridge {
 
         let hosts_c = CString::new("*").expect("static string has no NUL");
         let ports_c = CString::new("*").expect("static string has no NUL");
-        #[cfg(target_os = "windows")]
-        let domains_c = CString::new("").expect("empty string has no NUL");
 
         let processes = options.proxybridge_processes.clone();
         for process in &processes {
@@ -335,7 +341,7 @@ impl ProxyBridge {
                     process_c.as_ptr(),
                     hosts_c.as_ptr(),
                     ports_c.as_ptr(),
-                    RULE_PROTOCOL_TCP,
+                    RULE_PROTOCOL_BOTH,
                     RULE_ACTION_PROXY,
                 );
             }
@@ -345,8 +351,7 @@ impl ProxyBridge {
                     process_c.as_ptr(),
                     hosts_c.as_ptr(),
                     ports_c.as_ptr(),
-                    domains_c.as_ptr(),
-                    RULE_PROTOCOL_TCP,
+                    RULE_PROTOCOL_BOTH,
                     RULE_ACTION_PROXY,
                     proxy_config_id,
                 );
@@ -428,6 +433,8 @@ fn default_install_dirs() -> Vec<PathBuf> {
 ///
 /// Resolution order:
 /// 1. User-supplied `proxybridge_path` (pointing at the directory or the DLL).
+///    No longer surfaced in the GUI — the core ships in `<app_dir>/proxybridge/`
+///    — but kept as an override for hand-edited settings files.
 /// 2. Bundled library in `<app_dir>/proxybridge/` (CI builds).
 /// 3. Well-known install directories (e.g. `C:\Program Files\ProxyBridge`).
 ///
@@ -560,7 +567,7 @@ mod tests {
                 process.as_ptr(),
                 any.as_ptr(),
                 any.as_ptr(),
-                RULE_PROTOCOL_TCP,
+                RULE_PROTOCOL_BOTH,
                 RULE_ACTION_PROXY,
             );
         }
@@ -572,6 +579,24 @@ mod tests {
             line.contains("added rule id"),
             "unexpected log line: {line}"
         );
+    }
+
+    /// The rule protocol is passed to the C library as a bare `int`, so nothing
+    /// but this test ties it to the vendored header `build.rs` compiles in.
+    /// It must stay `BOTH`: `match_rule` in `vendor/proxybridge-3.2.0/
+    /// ProxyBridge.c` drops a `TCP`-only rule for UDP packets, which is what
+    /// silently sent DNS (UDP :53) direct and made it look un-hijacked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rule_protocol_covers_udp_and_matches_the_vendored_header() {
+        let header = include_str!("../../../vendor/proxybridge-3.2.0/ProxyBridge.h");
+        assert!(
+            header.contains("RULE_PROTOCOL_TCP = 0")
+                && header.contains("RULE_PROTOCOL_UDP = 1")
+                && header.contains("RULE_PROTOCOL_BOTH = 2"),
+            "vendored ProxyBridge.h renumbered RuleProtocol; update the constants"
+        );
+        assert_eq!(RULE_PROTOCOL_BOTH, 2);
     }
 
     #[cfg(not(target_os = "macos"))]
