@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::process::Child;
 
-use super::{ElevationError, SingleInstanceError, WaitError};
+use super::{SingleInstanceError, WaitError};
 
 /// No-op on unix; the windows build attaches a hidden console here so CTRL_BREAK
 /// can later be delivered to the child.
@@ -16,14 +16,42 @@ pub fn init_console_for_signaling() {}
 /// TUN mode and ProxyBridge (NFQUEUE interception) both require root on
 /// Linux; zju-connect's non-TUN mode runs fine as a regular user. The manager
 /// rejects TUN/ProxyBridge starts when this is false, and the frontend offers
-/// an elevation flow (which is unsupported on unix, so the start is then
-/// retried with those features disabled).
+/// an elevation flow (see [`super::relaunch_self_elevated`]).
 pub fn is_process_elevated() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-pub fn relaunch_self_elevated(_args: &[String]) -> Result<(), ElevationError> {
-    Err(ElevationError::Unsupported)
+/// Detach the elevated instance from the process that launched it.
+///
+/// Only meaningful on Linux, where `pkexec` sets a parent-death signal that
+/// survives `execve` (and where the parent holds a pipe on our stderr) — see
+/// [`super::pkexec`]. A no-op elsewhere.
+pub fn detach_from_parent() {
+    #[cfg(target_os = "linux")]
+    super::pkexec::detach_from_parent();
+}
+
+/// Give back state files an elevated instance created (Linux/`pkexec` only).
+pub fn reclaim_state_files(app_dir: &Path, client_data_file: &str) {
+    #[cfg(target_os = "linux")]
+    super::pkexec::reclaim_state_files(app_dir, client_data_file);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app_dir, client_data_file);
+    }
+}
+
+/// Spawn a GUI helper (browser, file dialog) in the calling user's session when
+/// this is an elevated Linux instance; plain spawn everywhere else.
+pub fn spawn_gui_command(program: &str, args: &[String]) -> std::io::Result<std::process::Child> {
+    #[cfg(target_os = "linux")]
+    {
+        super::pkexec::spawn_gui_command(program, args)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::process::Command::new(program).args(args).spawn()
+    }
 }
 
 /// Polls /proc/<pid> for existence. Linux-only convenience.

@@ -19,10 +19,9 @@
 //! used only to choose that flag: `--new-window` for Chrome-family,
 //! `-new-window` for Firefox-family.
 
-use std::process::Command;
-
 use crate::backend::browser_detect::{classify_browser, BrowserKind};
 use crate::backend::launch_options::LaunchOptions;
+use crate::backend::platform;
 
 pub const EIP_URL: &str = "http://eipapp.scmcc.com.cn:82/mclient/portal/#/home/work";
 
@@ -39,18 +38,30 @@ pub enum OpenEipError {
 /// Open the EIP portal in the configured browser, or pass it to the OS default
 /// handler when no browser is configured.
 pub fn open_eip(options: &LaunchOptions) -> Result<(), OpenEipError> {
+    open_url_with(options, EIP_URL)
+}
+
+/// Open an arbitrary URL with the configured program, or with the OS default
+/// handler when the user has not picked one.
+///
+/// GUI helpers are routed through [`platform::spawn_gui_command`] so an
+/// elevated instance — which runs as root on Linux — opens the browser in the
+/// session of the user that authorized it instead of trying to start a browser
+/// as root. Chrome-family browsers refuse to start as root, which would leave
+/// the user without the page the app just promised to open.
+pub fn open_url_with(options: &LaunchOptions, url: &str) -> Result<(), OpenEipError> {
     let program = options.eip_browser_program.trim();
     if program.is_empty() {
-        return default_open_command()
-            .spawn()
-            .map(|_| ())
-            .map_err(OpenEipError::Spawn);
+        return open_url(url);
     }
     // Unknown binaries fall back to Chrome-family flags.
     let kind = classify_browser(program).unwrap_or(BrowserKind::Chrome);
     let mut args = options.eip_browser_args.clone();
     ensure_new_window_flag(&mut args, kind);
-    spawn_browser(program, &args)
+    args.push(url.to_string());
+    platform::spawn_gui_command(program, &args)
+        .map(|_| ())
+        .map_err(OpenEipError::Spawn)
 }
 
 /// Append the platform-appropriate new-window flag unless the user already
@@ -64,34 +75,28 @@ fn ensure_new_window_flag(args: &mut Vec<String>, kind: BrowserKind) {
     }
 }
 
-fn spawn_browser(program: &str, args: &[String]) -> Result<(), OpenEipError> {
-    Command::new(program)
-        .args(args)
-        .arg(EIP_URL)
-        .spawn()
+/// Open `url` with the OS default handler.
+pub fn open_url(url: &str) -> Result<(), OpenEipError> {
+    let (program, mut args) = default_open_program();
+    args.push(url.to_string());
+    platform::spawn_gui_command(program, &args)
         .map(|_| ())
         .map_err(OpenEipError::Spawn)
 }
 
 #[cfg(target_os = "windows")]
-fn default_open_command() -> Command {
-    let mut cmd = Command::new("rundll32");
-    cmd.arg("url.dll,FileProtocolHandler").arg(EIP_URL);
-    cmd
+fn default_open_program() -> (&'static str, Vec<String>) {
+    ("rundll32", vec!["url.dll,FileProtocolHandler".to_string()])
 }
 
 #[cfg(target_os = "macos")]
-fn default_open_command() -> Command {
-    let mut cmd = Command::new("open");
-    cmd.arg(EIP_URL);
-    cmd
+fn default_open_program() -> (&'static str, Vec<String>) {
+    ("open", Vec::new())
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn default_open_command() -> Command {
-    let mut cmd = Command::new("xdg-open");
-    cmd.arg(EIP_URL);
-    cmd
+fn default_open_program() -> (&'static str, Vec<String>) {
+    ("xdg-open", Vec::new())
 }
 
 #[cfg(test)]

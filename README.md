@@ -97,10 +97,11 @@ libraries linked into them live in `vendor/` and are not redistributed.
 ```
 src/
   backend/                   platform-agnostic core: launch options, settings
-                             store, pending-connect store, relaunch args, paths,
-                             external links (open EIP), proxy/ supervisor, and
-                             platform/ (windows elevation + console signaling,
-                             unix stubs)
+                             store, pending-connect store, relaunch args,
+                             elevation handshake, paths, external links (open
+                             EIP), proxy/ supervisor, and platform/ (Windows
+                             elevation + console signaling, Linux pkexec
+                             elevation, unix helpers)
   web/                       HTTP server + frontend
     server.rs                axum router, port selection, SSE endpoint
     handlers.rs              REST API: start/stop, settings, status, elevate
@@ -129,10 +130,25 @@ scripts/                     build_linux_appimage.sh
 - On Windows, `src/backend/platform/windows_impl.rs` allocates a hidden console
   at startup so `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child_pid)` can
   deliver graceful shutdown to the child without a console window flashing.
-  When TUN mode is requested from a non-elevated process, the app calls
-  `ShellExecuteW("runas")` to relaunch itself elevated, then quits; the
-  elevated copy waits for the un-elevated parent's pid to exit, reads the
-  pending-connect marker, and resumes the connection automatically.
+- Elevation (TUN mode / ProxyBridge) always means *relaunching this app* with
+  administrator rights, because ProxyBridge intercepts in-process:
+  `ShellExecuteW("runas")` on Windows, `pkexec` (polkit) on Linux. The relaunch
+  is coordinated by a handshake (`src/backend/elevation.rs`): the parent
+  generates a random token, the elevated instance creates
+  `app_dir/.elevate-ready-<token>` as soon as it is running, and only then does
+  the parent release the single-instance lock and exit. That is what keeps a
+  dismissed or impossible authorization prompt from turning into an endless
+  "waiting for authorization" state: the parent reports the real outcome
+  (cancelled / no agent / refused / timeout) and stays alive for a retry.
+- On Linux, `src/backend/platform/pkexec.rs` runs the app through
+  `pkexec --disable-internal-agent /usr/bin/env DISPLAY=… …`, so the polkit
+  dialog is drawn by the session's authentication agent (统信 UOS / Deepin:
+  `dde-polkit-agent`) instead of pkexec's textual agent on a terminal that a
+  desktop launch does not have. The elevated instance clears the parent-death
+  signal `pkexec` sets (otherwise it would be killed the moment the original
+  GUI exits), detaches stdio, hands root-created state files back to
+  `PKEXEC_UID`, and opens the browser in that user's session — Chrome-family
+  browsers refuse to start as root.
 - The web server binds to `127.0.0.1` on a high port (tries last-used port from
   `web_port.txt`, falls back to OS-assigned random). The port is written to
   `web_port.txt` in the app directory for persistence across restarts.
@@ -162,8 +178,18 @@ scripts/                     build_linux_appimage.sh
   on a desktop that ships none of them, pick a detected browser from the
   list instead.
 - macOS compiles but is not exercised in CI.
+- Linux elevation needs a graphical polkit agent and a setuid `/usr/bin/pkexec`.
+  Both are checked before the authorization request is made, and the UI shows a
+  concrete message (missing agent / stripped setuid bit / dismissed prompt) if
+  it cannot proceed. Without a polkit agent the app can still be started from a
+  terminal with `sudo`, which skips the relaunch entirely.
 - On GNOME the tray icon requires the AppIndicator/KStatusNotifierItem
   shell extension (KDE Plasma works out of the box).
+- Elevation runs the binary at its current path with administrator rights. In
+  the AppImage build that path is the copy the launcher keeps under
+  `$XDG_STATE_HOME/zju-connect-gui/appimage/`, i.e. inside the user's home:
+  keep it private (the default `0700`) — anything that can replace that binary
+  could otherwise obtain root through the authorization prompt.
 - Credentials are stored in plaintext in `gui_settings.json` (0600 on Unix)
   and passed to `zju-connect` on its command line — visible in the process
   list (`ps` / Process Explorer). This is an upstream CLI contract.

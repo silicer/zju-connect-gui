@@ -113,6 +113,22 @@ pub fn relaunch_self_elevated(args: &[String]) -> Result<(), ElevationError> {
     }
 }
 
+/// No-op on Windows: the elevated child is a normal process that keeps running
+/// after this instance exits (there is no parent-death signal to clear, and no
+/// inherited stderr pipe to detach from).
+pub fn detach_from_parent() {}
+
+/// No-op on Windows: the elevated instance is a separate logon-session process
+/// with its own token, and state files are not owned by the invoking user in a
+/// way that would lock them out afterwards.
+pub fn reclaim_state_files(_app_dir: &Path, _client_data_file: &str) {}
+
+/// Spawn a GUI helper (browser, file dialog). On Windows the elevated instance
+/// opens its own windows, so there is nothing to re-enter.
+pub fn spawn_gui_command(program: &str, args: &[String]) -> std::io::Result<std::process::Child> {
+    std::process::Command::new(program).args(args).spawn()
+}
+
 pub fn wait_for_process_exit(pid: u32, timeout: Duration) -> Result<(), WaitError> {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }
         .map_err(|err| WaitError::Io(std::io::Error::other(format!("OpenProcess: {err}"))))?;

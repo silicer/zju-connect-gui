@@ -8,9 +8,13 @@ mod tray;
 use std::sync::Arc;
 use std::time::Duration;
 
+use zju_connect_gui::backend::elevation::ElevationHandshake;
+use zju_connect_gui::backend::external_links;
 use zju_connect_gui::backend::paths::resolve_app_dir;
 use zju_connect_gui::backend::platform;
-use zju_connect_gui::backend::relaunch_args::{parse_elevated_relaunch_args, ElevatedRelaunchArgs};
+use zju_connect_gui::backend::relaunch_args::{
+    build_elevated_relaunch_args, parse_elevated_relaunch_args, ElevatedRelaunchArgs,
+};
 use zju_connect_gui::backend::{
     pending_connect_store::PendingConnectStore,
     proxy::{self, ProxyManager, ProxyManagerConfig, UiBridge},
@@ -22,8 +26,9 @@ use zju_connect_gui::web::server;
 const INSTANCE_LOCK_FILE: &str = "instance.lock";
 
 /// How long the elevated child polls for the instance lock before giving up.
-/// The parent only releases the lock after `ShellExecuteW("runas")` returns,
-/// which can be delayed by a slow UAC consent prompt — allow several minutes.
+/// The parent only releases the lock once the elevated instance has published
+/// its readiness marker, which can be delayed by a slow UAC / polkit prompt —
+/// allow several minutes.
 const ELEVATED_LOCK_WAIT: Duration = Duration::from_secs(300);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -64,10 +69,29 @@ fn acquire_lock(
 async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
     let app_dir = resolve_app_dir()?;
 
+    // ── Elevated relaunch: detach, then announce ourselves ─────────
+    // On Linux the elevation helper (`pkexec`) asks the kernel to SIGTERM it
+    // when its parent dies and hands us the pipe on its stderr; both would
+    // follow this instance into the grave as soon as the original GUI exits.
+    // Detaching is only ever done for a relaunched instance: a normal launch
+    // keeps whatever terminal/stdio it was started with.
+    if relaunch.resume_pending_connect {
+        platform::detach_from_parent();
+    }
+
+    // Publish readiness *before* touching the instance lock: the parent still
+    // holds it, and only releases it (and exits) once this marker exists.
+    if let Some(handshake) = relaunch.handshake.as_ref() {
+        if let Err(err) = handshake.mark_ready(&app_dir) {
+            log::warn!("failed to publish the elevation handshake: {err}");
+        }
+    }
+
     // ── Single-instance lock ───────────────────────────────────────
-    // Elevated child: the parent drops the lock right before relaunching us,
-    // but `ShellExecuteW("runas")` can sit on the UAC consent prompt for a
-    // long time — so poll for the lock instead of trusting a fixed delay.
+    // Elevated child: the parent holds the lock until it has seen our readiness
+    // marker and drops it right before exiting — but the authorization prompt
+    // (`ShellExecuteW("runas")` / `pkexec`) may keep the user busy for minutes,
+    // so poll for the lock instead of trusting a fixed delay.
     // Normal launch: refuse if another instance is already running.
     let mut _instance_guard: Option<platform::SingleInstanceGuard> = None;
     if relaunch.wait_parent_pid > 0 {
@@ -119,9 +143,24 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
         };
     }
 
+    // The parent saw the marker (it released the lock for us); drop it.
+    if let Some(handshake) = relaunch.handshake.as_ref() {
+        handshake.clear(&app_dir);
+    }
+
     // ── Core subsystems ───────────────────────────────────────────
     let settings = Arc::new(UserSettingsStore::new(&app_dir));
     let pending = Arc::new(PendingConnectStore::new(&app_dir));
+
+    // An elevated instance may have created state files as root; hand them back
+    // so a later unprivileged run can still write them.
+    if platform::is_process_elevated() {
+        let client_data_file = settings
+            .load()
+            .map(|options| options.client_data_file)
+            .unwrap_or_default();
+        platform::reclaim_state_files(&app_dir, &client_data_file);
+    }
 
     let cfg = ProxyManagerConfig::default();
     let manager =
@@ -160,14 +199,15 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
             let elevated = platform::is_process_elevated();
             log::info!("resuming pending connect after elevation (elevated={elevated})");
             if !elevated {
-                log::error!(
-                    "Process is NOT elevated after UAC. UAC may be disabled. \
-                     Please enable UAC or run this program as Administrator."
-                );
-                bridge.emit_event(proxy::ProxyEvent::Error(
-                    "提权失败：系统未授予管理员权限。请启用 UAC 或以管理员身份运行本程序。"
-                        .to_string(),
-                ));
+                let hint = if cfg!(windows) {
+                    "请启用 UAC 或以管理员身份运行本程序。"
+                } else {
+                    "请确认系统授权成功，或以管理员身份（sudo）运行本程序。"
+                };
+                log::error!("process is not elevated after the authorization flow: {hint}");
+                bridge.emit_event(proxy::ProxyEvent::Error(format!(
+                    "提权失败：系统未授予管理员权限。{hint}"
+                )));
                 // Don't attempt TUN mode or ProxyBridge if we're not elevated —
                 // they will just fail. Disable both before retrying.
                 let mut options = settings.load().unwrap_or_else(|err| {
@@ -231,35 +271,44 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
         let ctrl_c = tokio::signal::ctrl_c();
         tokio::pin!(ctrl_c);
         tokio::select! {
-            Some(args) = elevate_rx.recv() => {
+            Some(()) = elevate_rx.recv() => {
                 log::info!("elevation requested from web UI");
-                // Coalesce: if another request arrived while we were busy,
-                // only handle the latest one.
-                let mut args = args;
-                while let Ok(latest) = elevate_rx.try_recv() {
-                    args = latest;
-                }
+                // Coalesce: if another request arrived while we were busy, only
+                // handle the latest one.
+                while elevate_rx.try_recv().is_ok() {}
                 if let Err(err) = pending.mark_resume_connect() {
                     log::error!("failed to mark resume connect: {err}");
                 }
                 server::persist_port(&app_dir, port).await;
-                match platform::relaunch_self_elevated(&args) {
+                // One random token per attempt: the elevated instance creates
+                // `<app_dir>/.elevate-ready-<token>` once it is running, which
+                // is how this process knows that it may release the instance
+                // lock and exit (see `backend::elevation`).
+                let handshake = ElevationHandshake::new();
+                let args =
+                    build_elevated_relaunch_args(std::process::id(), Some(&handshake));
+                match platform::relaunch_self_elevated(&args).await {
                     Ok(()) => {
+                        handshake.clear(&app_dir);
                         log::info!("elevated process launched, exiting");
                         drop(_instance_guard);
                         relaunched = true;
                         break;
                     }
                     Err(err) => {
+                        handshake.clear(&app_dir);
                         log::error!("elevation failed: {err}");
                         // Don't leave a stale resume marker behind: a later
                         // normal launch would otherwise auto-connect without
                         // the user asking for it.
                         let _ = pending.clear();
                         // Stale elevation clicks queued while this attempt was
-                        // in flight are just repeat UAC prompts; drop them.
+                        // in flight are just repeat authorization prompts.
                         while elevate_rx.try_recv().is_ok() {}
-                        bridge.emit_event(proxy::ProxyEvent::Error(format!("提权失败：{err}")));
+                        bridge.emit_event(proxy::ProxyEvent::Error(format!(
+                            "提权失败：{}",
+                            err.user_message()
+                        )));
                     }
                 }
             }
@@ -292,6 +341,15 @@ async fn async_main(relaunch: ElevatedRelaunchArgs) -> Result<(), Box<dyn std::e
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    // A root instance must not leave root-owned state files behind.
+    if platform::is_process_elevated() {
+        let client_data_file = settings
+            .load()
+            .map(|options| options.client_data_file)
+            .unwrap_or_default();
+        platform::reclaim_state_files(&app_dir, &client_data_file);
     }
 
     server_handle.abort();
@@ -340,19 +398,9 @@ fn open_browser(port: u16, token: &str) {
     // The token is intentionally not logged: it would end up in terminal
     // history and journald.
     log::info!("opening browser at http://localhost:{port}");
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("rundll32")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(&url)
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    // `open_url` re-enters the calling user's session on Linux when this is an
+    // elevated instance, so the page opens in a browser that can actually run.
+    if let Err(err) = external_links::open_url(&url) {
+        log::warn!("failed to open the browser: {err}");
     }
 }

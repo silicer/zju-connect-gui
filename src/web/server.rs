@@ -32,8 +32,10 @@ pub struct RunningServer {
     /// The web UI may keep the current launch token in browser localStorage to
     /// allow refreshing / reopening the page without the query-string token.
     pub token: String,
-    /// Elevation requests coming in from the web UI.
-    pub elevate_rx: mpsc::Receiver<Vec<String>>,
+    /// Elevation requests coming in from the web UI. The payload is empty: the
+    /// main event loop owns the relaunch because it has to generate the
+    /// per-attempt handshake token.
+    pub elevate_rx: mpsc::Receiver<()>,
     pub handle: tokio::task::JoinHandle<()>,
 }
 
@@ -50,7 +52,7 @@ pub async fn run(
     // Capacity 1: elevation requests are single-flight (try_send drops a new
     // request while one is already queued), so a scripted caller cannot stack
     // up a queue of UAC prompts.
-    let (elevate_tx, elevate_rx) = mpsc::channel::<Vec<String>>(1);
+    let (elevate_tx, elevate_rx) = mpsc::channel::<()>(1);
 
     let state = AppState {
         manager: manager.clone(),

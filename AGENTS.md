@@ -35,6 +35,15 @@ src/
                                on load AND save)
     pending_connect_store.rs   gui_pending_connect.json with 5-min TTL
     relaunch_args.rs           --resume-pending-connect --wait-parent-pid=N
+                               --elevate-handshake=<token>
+    elevation.rs               elevation handshake: random per-attempt token +
+                               `<app_dir>/.elevate-ready-<token>` readiness
+                               marker. The parent releases the instance lock
+                               (and exits) only once the elevated instance is
+                               really up, so a dismissed or impossible
+                               authorization prompt becomes a reported error
+                               instead of an endless "waiting for
+                               authorization"
     paths.rs                   resolve_app_dir() = parent of current_exe
     external_links.rs          open_eip (opens the EIP portal in the
                                configured browser — new window by default,
@@ -62,11 +71,19 @@ src/
       readiness.rs             HTTP-bind dial poll
       captcha.rs               60s deadline, size-stable file polling
       retry.rs                 ±20% jitter exponential backoff
-    platform/                  cfg-gated: windows_impl.rs vs unix_impl.rs
+    platform/                  cfg-gated: windows_impl.rs vs unix_impl.rs,
+                               plus pkexec.rs (Linux elevation)
                                public API: is_process_elevated,
-                               relaunch_self_elevated, signal_child_to_quit,
-                               wait_for_process_exit, escape_arg,
-                               init_console_for_signaling,
+                               relaunch_self_elevated (async; Windows
+                               ShellExecuteW "runas", Linux pkexec + polkit),
+                               detach_from_parent (Linux: clear
+                               PR_SET_PDEATHSIG, own session, stdio to
+                               /dev/null), reclaim_state_files (hand
+                               root-created files back to PKEXEC_UID),
+                               spawn_gui_command (re-enter the calling user's
+                               session for browsers/dialogs when elevated),
+                               signal_child_to_quit, wait_for_process_exit,
+                               escape_arg, init_console_for_signaling,
                                acquire_single_instance, SingleInstanceGuard
   web/                         HTTP server + SSE bridge
     server.rs                  axum router, port selection (try-last, then
@@ -135,7 +152,7 @@ vendor/                        C sources compiled into the binary by build.rs
 | POST | `/api/start` | Start proxy; returns 412 if elevation needed |
 | POST | `/api/stop` | Stop proxy |
 | POST | `/api/submit-input` | Submit SMS/callback input or captcha coordinates (`value` + optional `kind`) |
-| POST | `/api/elevate` | Trigger elevation flow (Windows only; no-op signal on other OSes) |
+| POST | `/api/elevate` | Trigger elevation: the main loop relaunches this app with administrator rights (Windows `ShellExecuteW`/UAC, Linux `pkexec`/polkit) and exits once the elevated instance is up. Returns immediately; the outcome arrives as an SSE `error` event on failure |
 | GET | `/api/status` | Snapshot of current proxy state |
 | GET | `/api/browsers` | List locally installed browsers (name/path/chrome-firefox kind) |
 | POST | `/api/select-browser-file` | Open a native file-picker dialog; returns `{path}` or `{path: null}` on cancel; 409 while a dialog is already open |

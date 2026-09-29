@@ -24,9 +24,10 @@ pub struct AppState {
     pub port: u16,
     /// Per-launch auth token; required (header or `?token=`) on all /api routes.
     pub auth_token: String,
-    /// Elevation requests from the web UI, consumed by the main event loop.
+    /// Elevation requests from the web UI, consumed by the main event loop
+    /// (which owns the relaunch itself, including the handshake token).
     /// Capacity-1 channel: requests are single-flight.
-    pub elevate_tx: mpsc::Sender<Vec<String>>,
+    pub elevate_tx: mpsc::Sender<()>,
     /// Serializes the native file-picker dialog: only one dialog may be open
     /// at a time (a second concurrent request is rejected with 409).
     pub dialog_lock: Arc<tokio::sync::Mutex<()>>,
@@ -139,15 +140,12 @@ pub async fn elevate(
         return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
     }
 
-    use crate::backend::relaunch_args::build_elevated_relaunch_args;
-    let parent_pid = std::process::id();
-    let args = build_elevated_relaunch_args(parent_pid);
-
     // The main event loop consumes this and performs the elevated relaunch. It
-    // keeps listening afterwards, so a failed relaunch (UAC denied / platform
-    // unsupported) can simply be retried from the UI. try_send: while a request
-    // is already queued, additional clicks are dropped (single-flight).
-    let _ = state.elevate_tx.try_send(args);
+    // keeps listening afterwards, so a failed relaunch (prompt dismissed /
+    // platform unsupported) can simply be retried from the UI. try_send: while
+    // a request is already queued, additional clicks are dropped
+    // (single-flight).
+    let _ = state.elevate_tx.try_send(());
 
     StatusCode::OK.into_response()
 }

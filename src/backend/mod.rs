@@ -1,4 +1,5 @@
 pub mod browser_detect;
+pub mod elevation;
 pub mod external_links;
 pub mod launch_options;
 pub mod paths;

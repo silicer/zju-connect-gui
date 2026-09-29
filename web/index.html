@@ -301,6 +301,11 @@ document.addEventListener('alpine:init', () => {
     statusMessage: '',
     starting: false,
     stopping: false,
+    // True while we are waiting for the OS authorization prompt that
+    // /api/elevate triggered. An SSE `error` can arrive before the POST
+    // resolves, so this flag keeps the "waiting for authorization" message
+    // from overwriting the failure that just came in.
+    elevationPending: false,
     sseErrors: 0,
     logs: [],
     _pendingLogs: [],
@@ -465,14 +470,22 @@ document.addEventListener('alpine:init', () => {
       });
       es.addEventListener('error', (e) => {
         const d = JSON.parse(e.data);
+        // An elevation failure is reported here even if the /api/elevate POST
+        // is still in flight; stop claiming that we are waiting for a prompt.
+        this.elevationPending = false;
         this.statusMessage = d.message;
+        this.queueLog('错误: ' + d.message);
         this.starting = false; this.stopping = false;
       });
       es.onopen = () => { this.sseErrors = 0; this.refreshStatus(); };
       es.onerror = () => {
         this.sseErrors = (this.sseErrors || 0) + 1;
         if (this.sseErrors >= 5) {
-          this.statusMessage = '与后台连接已断开，请刷新页面';
+          // Losing the backend right after asking for elevation is expected:
+          // the original instance exits once the elevated one has taken over.
+          this.statusMessage = this.elevationPending
+            ? '已授权，正在切换到管理员实例，新窗口将自动连接'
+            : '与后台连接已断开，请刷新页面';
           this.starting = false; this.stopping = false;
         }
       };
@@ -557,13 +570,16 @@ document.addEventListener('alpine:init', () => {
         const r = await apiFetch('/api/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
         if (r.status === 412) {
           const reason = this.settings.tunMode ? '全局模式' : 'ProxyBridge 进程代理';
-          this.statusMessage = `${reason}需要管理员权限，正在请求提权...`;
+          this.elevationPending = true;
+          this.statusMessage = `${reason}需要管理员权限，正在请求系统授权...`;
           const r2 = await apiFetch('/api/elevate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ options: this.settings }) });
           if (!r2.ok) {
             const msg = await r2.text();
+            this.elevationPending = false;
             this.statusMessage = '提权失败：' + msg;
-          } else {
-            this.statusMessage = '已请求管理员权限，新窗口将自动连接；若未弹出授权窗口，请检查系统权限设置';
+          } else if (this.elevationPending) {
+            // Still no failure event: the system prompt should be on screen.
+            this.statusMessage = '已请求管理员权限，请在系统授权窗口中输入密码；授权成功后本页面会关闭，新窗口将自动连接';
           }
           this.starting = false;
         } else if (!r.ok) {

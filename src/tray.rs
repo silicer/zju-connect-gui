@@ -33,19 +33,10 @@ pub use desktop_impl::TrayController;
 
 fn open_web_ui(port: u16, token: &str) {
     let url = format!("http://localhost:{port}/?token={token}");
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("rundll32")
-            .arg("url.dll,FileProtocolHandler")
-            .arg(&url)
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    // Same helper as the startup auto-open: on Linux it re-enters the calling
+    // user's session when this is an elevated instance, so the browser is not
+    // started as root (Chrome-family browsers refuse to).
+    if let Err(err) = zju_connect_gui::backend::external_links::open_url(&url) {
+        log::warn!("failed to open the web UI from the tray: {err}");
     }
 }
